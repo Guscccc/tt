@@ -244,7 +244,9 @@ LESSONS = [
 
 PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              ".tt_progress.json")
-SPARKLINE_BLOCKS = "  ▂▃▄▅▆▇█"
+SPARKLINE_BLOCKS = "▁▂▃▄▅▆▇█"
+PROGRESS_PLOT_LABEL_W = 5
+PROGRESS_PLOT_DATA_COL = PROGRESS_PLOT_LABEL_W + 1
 
 
 def calculate_session_stats(total_correct, total_typed, elapsed):
@@ -355,7 +357,7 @@ def build_wpm_plot_lines(values, width, height):
     if not values:
         return [fit_text("WPM: no history yet", width)]
 
-    label_w = 5
+    label_w = PROGRESS_PLOT_LABEL_W
     plot_w = width - label_w - 2
     points = compress_series(values, plot_w)
     if not points:
@@ -554,6 +556,13 @@ def fit_text(text, width):
     if width <= 3:
         return text[:width]
     return text[: width - 3] + "..."
+
+
+def format_progress_sparkline(label, plot, width, suffix=""):
+    """Render a sparkline row aligned to the progress plot's data column."""
+    prefix = label.ljust(PROGRESS_PLOT_DATA_COL)
+    suffix_text = f"  {suffix}" if suffix else ""
+    return fit_text(f"{prefix}{plot}{suffix_text}", width)
 
 
 def practice_left_x(width):
@@ -931,7 +940,8 @@ def _build_results_lines(w, h, lesson_name, session_stats, lesson_history):
     # Thresholds are set so total included lines == h at every height 1-12,
     # with no trailing blank spacer row.
     if h < 13:
-        sparkline_text = fit_text(f"WPM {wpm_plot}  latest {wpm:.1f}", max_text_w)
+        sparkline_text = format_progress_sparkline("WPM:", wpm_plot, max_text_w,
+                                                   f"latest {wpm:.1f}")
         elements = [
             (3, "RESULTS", title_attr),
             (6, fit_text(lesson_name, max_text_w), dim_attr),
@@ -941,7 +951,7 @@ def _build_results_lines(w, h, lesson_name, session_stats, lesson_history):
             (4, fit_text(f"Sessions {session_count}  Best {best_wpm:.1f} WPM", max_text_w), dim_attr),
             (10, fit_text(f"Best Acc: {best_acc:.1f}%   Avg Acc: {avg_acc:.1f}%", max_text_w), dim_attr),
             (5, sparkline_text, curses.color_pair(C_ACCENT)),
-            (7, fit_text(f"Acc trend: {acc_plot}", max_text_w), dim_attr),
+            (7, format_progress_sparkline("Acc:", acc_plot, max_text_w), dim_attr),
             (8, "─" * min(30, w - 3), dim_attr),
             (11, fit_text(f"Time: {mins}:{secs:02d}  Chars: {total_typed}", max_text_w), dim_attr),
             (2, fit_text("R: Retry  M: Menu  Q: Quit", max_text_w), dim_attr),
@@ -970,8 +980,9 @@ def _build_results_lines(w, h, lesson_name, session_stats, lesson_history):
         (fit_text("R: Retry  M: Menu  Q: Quit", max_text_w), dim_attr),
     ]
 
-    sparkline_text = fit_text(f"WPM {wpm_plot}  latest {wpm:.1f}", max_text_w)
-    acc_trend_text = fit_text(f"Acc trend: {acc_plot}", max_text_w)
+    sparkline_text = format_progress_sparkline("WPM:", wpm_plot, max_text_w,
+                                               f"latest {wpm:.1f}")
+    acc_trend_text = format_progress_sparkline("Acc:", acc_plot, max_text_w)
 
     vis_h = h - len(header) - len(footer)
     lines = list(header)

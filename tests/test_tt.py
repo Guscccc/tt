@@ -1,5 +1,6 @@
 import json
 import pathlib
+import re
 import sys
 
 import pytest
@@ -55,6 +56,36 @@ def patch_curses(monkeypatch):
 
 def addstr_texts(screen):
     return [call[3] for call in screen.calls if call[0] == "addstr"]
+
+
+def _results_texts(lines):
+    return [text for text, _ in lines]
+
+
+def _progress_alignment_columns(lines):
+    texts = _results_texts(lines)
+    acc_line = next((text for text in texts if text.startswith("Acc:")), None)
+    if acc_line is None:
+        return None
+
+    assert acc_line.startswith("Acc:".ljust(tt.PROGRESS_PLOT_DATA_COL))
+
+    chart_line = next(
+        (text for text in texts if "|" in text and not text.startswith("Acc:")),
+        None,
+    )
+    if chart_line is not None:
+        return (chart_line.index("|") + 1, tt.PROGRESS_PLOT_DATA_COL)
+
+    wpm_line = next(
+        (text for text in texts if text.startswith("WPM:") and "latest " in text),
+        None,
+    )
+    if wpm_line is not None:
+        assert wpm_line.startswith("WPM:".ljust(tt.PROGRESS_PLOT_DATA_COL))
+        return (tt.PROGRESS_PLOT_DATA_COL, tt.PROGRESS_PLOT_DATA_COL)
+
+    return None
 
 
 @pytest.fixture
@@ -166,6 +197,7 @@ def test_compress_series_and_sparkline_edge_cases():
     assert tt.compress_series([1, 2, 3, 4], 2) == pytest.approx([1.5, 3.5])
     assert tt.make_sparkline([], 10) == ""
     assert tt.make_sparkline([7, 7, 7], 3) == "▅▅▅"
+    assert tt.make_sparkline([1, 9, 8], 3) == "▁█▇"
 
 
 def test_build_wpm_plot_lines_returns_readable_multiline_chart():
@@ -292,7 +324,7 @@ def test_build_results_lines_semicompact_layout(sample_history):
     assert texts[0] == "RESULTS"
     assert any("latest 33.0" in t for t in texts)
     assert any("Best 31.0 WPM" in t for t in texts)
-    assert any("Acc trend:" in t for t in texts)
+    assert any("Acc:" in t for t in texts)
     assert texts[-1].startswith("R: Retry")
 
 
@@ -304,7 +336,7 @@ def test_build_results_lines_full_mode_at_h14_uses_labeled_sparkline(sample_hist
     assert "PROGRESS" in texts
     assert any(t.startswith("WPM Progress:") for t in texts)
     assert any("latest 33.0" in t for t in texts)
-    assert any(t.startswith("Acc trend:") for t in texts)
+    assert any(t.startswith("Acc:") for t in texts)
     assert texts[-1].startswith("R: Retry")
 
 
@@ -327,7 +359,7 @@ def test_build_results_lines_full_mode_at_h13_avoids_blank_gap(sample_history):
     assert len(lines) == 13
     assert "PROGRESS" in texts
     assert any("latest 33.0" in t for t in texts)
-    assert any(t.startswith("Acc trend:") for t in texts)
+    assert any(t.startswith("Acc:") for t in texts)
     assert "" not in texts
 
 
@@ -340,7 +372,7 @@ def test_build_results_lines_large_layout_includes_progress_chart(sample_history
     assert any("Best WPM: 31.0" in t for t in texts)
     assert any("Avg WPM: 24.5" in t for t in texts)
     assert any(t.startswith("WPM Progress:") for t in texts)
-    assert any("Acc trend:" in t for t in texts)
+    assert any("Acc:" in t for t in texts)
     assert texts[-1].startswith("R: Retry")
 def test_build_results_lines_full_mode_plot_appears_at_h15(sample_history):
     """h=15: bar chart appears and keeps the acc trend."""
@@ -348,7 +380,7 @@ def test_build_results_lines_full_mode_plot_appears_at_h15(sample_history):
     texts = [t for t, _ in lines]
 
     assert any(t.startswith("WPM Progress:") for t in texts)
-    assert any(t.startswith("Acc trend:") for t in texts)
+    assert any(t.startswith("Acc:") for t in texts)
 
 
 def test_build_results_lines_full_mode_at_h14_has_no_blank_gap(sample_history):
@@ -359,7 +391,7 @@ def test_build_results_lines_full_mode_at_h14_has_no_blank_gap(sample_history):
     assert len(lines) == 14
     assert "" not in texts
     assert any(t.startswith("WPM Progress:") for t in texts)
-    assert any(t.startswith("Acc trend:") for t in texts)
+    assert any(t.startswith("Acc:") for t in texts)
 
 
 def test_build_results_lines_full_mode_plot_appears_at_h16(sample_history):
@@ -378,6 +410,69 @@ def test_build_results_lines_plot_grows_with_height(sample_history):
     lines_30 = tt._build_results_lines(80, 30, "Home Row", _sample_stats(), sample_history)
 
     assert len(lines_30) > len(lines_20)
+
+
+def test_build_results_lines_compact_alignment_uses_visible_wpm_start():
+    """Compact progress rows should not appear shifted by leading blank sparkline cells."""
+    lesson_history = [
+        {"wpm": 100.0, "accuracy": 100.0},
+        {"wpm": 102.0, "accuracy": 100.0},
+        {"wpm": 105.0, "accuracy": 100.0},
+        {"wpm": 108.0, "accuracy": 100.0},
+        {"wpm": 111.0, "accuracy": 100.0},
+        {"wpm": 114.0, "accuracy": 100.0},
+        {"wpm": 116.0, "accuracy": 100.0},
+        {"wpm": 118.0, "accuracy": 100.0},
+        {"wpm": 120.0, "accuracy": 100.0},
+        {"wpm": 122.0, "accuracy": 100.0},
+        {"wpm": 125.0, "accuracy": 100.0},
+        {"wpm": 128.0, "accuracy": 100.0},
+        {"wpm": 132.0, "accuracy": 100.0},
+        {"wpm": 136.0, "accuracy": 100.0},
+        {"wpm": 140.0, "accuracy": 100.0},
+        {"wpm": 145.0, "accuracy": 100.0},
+        {"wpm": 150.0, "accuracy": 100.0},
+        {"wpm": 155.0, "accuracy": 100.0},
+        {"wpm": 160.0, "accuracy": 100.0},
+        {"wpm": 165.0, "accuracy": 100.0},
+        {"wpm": 342.0, "accuracy": 100.0},
+        {"wpm": 180.0, "accuracy": 40.0},
+        {"wpm": 322.7, "accuracy": 23.6},
+    ]
+    session_stats = {
+        "wpm": 322.7,
+        "accuracy": 23.6,
+        "errors": 81,
+        "chars": 106,
+        "elapsed": 3.0,
+    }
+
+    lines = tt._build_results_lines(80, 12, "Home Row", session_stats, lesson_history)
+    texts = _results_texts(lines)
+    wpm_line = next(text for text in texts if text.startswith("WPM:"))
+    acc_line = next(text for text in texts if text.startswith("Acc:"))
+
+    assert wpm_line[tt.PROGRESS_PLOT_DATA_COL] != " "
+    assert acc_line[tt.PROGRESS_PLOT_DATA_COL] != " "
+
+
+def test_build_results_lines_layout_dump_and_alignment_for_every_height(sample_history):
+    """Print all layouts from h=40..1 and verify Acc aligns with the WPM plot."""
+    for height in range(40, 0, -1):
+        lines = tt._build_results_lines(80, height, "Home Row", _sample_stats(), sample_history)
+        texts = _results_texts(lines)
+
+        print(f"\n[h={height}]")
+        for text in texts:
+            print(f"  {text}")
+
+        alignment = _progress_alignment_columns(lines)
+        if alignment is not None:
+            plot_col, acc_col = alignment
+            assert plot_col == acc_col, (
+                f"At h={height}: plot data starts at column {plot_col}, "
+                f"but Acc data starts at column {acc_col}."
+            )
 
 
 @pytest.mark.parametrize("height", list(range(1, 41)))
