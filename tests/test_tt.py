@@ -53,6 +53,10 @@ def patch_curses(monkeypatch):
     monkeypatch.setattr(tt.curses, "KEY_ENTER", 10, raising=False)
 
 
+def addstr_texts(screen):
+    return [call[3] for call in screen.calls if call[0] == "addstr"]
+
+
 @pytest.fixture
 def sample_history():
     return [
@@ -425,6 +429,39 @@ def test_run_menu_search_and_enter_selects_best_match():
     screen = FakeScreen(keys=keys)
 
     assert tt.run_menu(screen) == 10
+
+
+
+def test_draw_menu_one_line_prioritizes_selected_lesson():
+    screen = FakeScreen(height=1, width=40)
+
+    tt.draw_menu(screen, selected=10)
+
+    texts = addstr_texts(screen)
+
+    assert any("Bottom Row" in text for text in texts)
+    assert all("TERMINAL TYPING TUTOR" not in text for text in texts)
+    assert all("Enter Select" not in text for text in texts)
+
+
+
+def test_draw_practice_one_line_shows_active_typing_line_only(monkeypatch):
+    monkeypatch.setattr(tt.time, "time", lambda: 100.0)
+    screen = FakeScreen(height=1, width=20)
+    lesson = {"name": "Test", "finger": "All", "keys": "a b c", "chars": "abc"}
+    lines = ["aaaa", "bbbb", "cccc"]
+    typed = [[], [], ["c"]]
+
+    tt.draw_practice(screen, lesson, lines, typed, cur_line=2, cur_col=1,
+                     start_time=90.0, total_correct=1, total_typed=1)
+
+    char_texts = [call[3] for call in screen.calls if call[0] == "addstr" and len(call[3]) == 1]
+    other_texts = [call[3] for call in screen.calls if call[0] == "addstr" and len(call[3]) > 1]
+
+    assert char_texts
+    assert set(char_texts) == {"c"}
+    assert all("ESC: Menu" not in text for text in other_texts)
+    assert all("WPM:" not in text for text in other_texts)
 
 
 @pytest.mark.parametrize(

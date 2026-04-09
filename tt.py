@@ -565,6 +565,16 @@ def draw_hline(win, y, x, width, char="─"):
     safe_addstr(win, y, x, char * width, curses.color_pair(C_DIM))
 
 
+
+def _focused_view_start(total_items, focus_idx, visible_count):
+    """Return a viewport start that keeps *focus_idx* visible."""
+    if total_items <= 0 or visible_count <= 0:
+        return 0
+    visible_count = min(total_items, visible_count)
+    max_start = total_items - visible_count
+    return min(max(0, focus_idx - visible_count // 2), max_start)
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # MENU SCREEN  (scrollable)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -603,24 +613,30 @@ def draw_menu(stdscr, selected, input_buf=""):
     stdscr.erase()
     h, w = stdscr.getmaxyx()
 
-    # Title (always row 0-1)
-    title = "TERMINAL TYPING TUTOR"
-    safe_addstr(stdscr, 0, 2, title, curses.color_pair(C_TITLE) | curses.A_BOLD)
-    draw_hline(stdscr, 1, 2, min(len(title), w - 4))
+    show_title = h >= 6
+    show_header_rule = h >= 7
+    show_footer = (bool(input_buf) and h >= 2) or (not input_buf and h >= 5)
+    show_footer_rule = show_footer and h >= 7
 
-    # Available viewport for menu items: rows 3 .. h-3
-    top_y = 3
-    footer_h = 2           # hline + hint row
-    avail = h - top_y - footer_h
-    if avail < 1:
-        avail = 1
+    top_y = 0
+    if show_title:
+        title = "TERMINAL TYPING TUTOR"
+        safe_addstr(stdscr, top_y, 2, title, curses.color_pair(C_TITLE) | curses.A_BOLD)
+        top_y += 1
+    if show_header_rule:
+        draw_hline(stdscr, top_y, 2, min(len("TERMINAL TYPING TUTOR"), w - 4))
+        top_y += 1
 
+    bottom_y = h
+    if show_footer_rule:
+        bottom_y -= 1
+    if show_footer:
+        bottom_y -= 1
+
+    avail = max(1, bottom_y - top_y)
     total_rows = len(_MENU_ROWS)
     sel_pos = _selected_menu_pos(selected)
-
-    # Compute scroll offset so selected is visible
-    scroll = max(0, min(sel_pos - avail // 2, total_rows - avail))
-    scroll = max(scroll, 0)
+    scroll = _focused_view_start(total_rows, sel_pos, avail)
 
     for vi in range(avail):
         ri = scroll + vi
@@ -640,34 +656,35 @@ def draw_menu(stdscr, selected, input_buf=""):
 
             keys_col = max(2 + len(label) + 2, min(26, max(2, w // 2)))
             max_keys = w - keys_col - 2
-            if max_keys >= 4:
+            if max_keys >= 4 and avail >= 3:
                 keys_preview = fit_text(lesson["keys"], max_keys)
                 safe_addstr(stdscr, y, keys_col, keys_preview, curses.color_pair(C_DIM))
         # "blank" rows are simply left empty
 
     # Scroll indicators
-    if scroll > 0:
+    if avail >= 1 and scroll > 0:
         safe_addstr(stdscr, top_y, w - 3, "▲", curses.color_pair(C_DIM))
-    if scroll + avail < total_rows:
+    if avail >= 1 and scroll + avail < total_rows:
         safe_addstr(stdscr, top_y + avail - 1, w - 3, "▼", curses.color_pair(C_DIM))
 
-    # Footer
-    fy = h - 2
-    draw_hline(stdscr, fy, 2, min(40, w - 4))
+    if show_footer_rule:
+        draw_hline(stdscr, h - 2, 2, min(40, w - 4))
 
-    if input_buf:
-        prompt = fit_text(f"Search: {input_buf}_", max(1, w - 4))
-        safe_addstr(stdscr, fy + 1, 2, prompt,
-                    curses.color_pair(C_ACCENT) | curses.A_BOLD)
-        hint_x = 2 + len(prompt) + 2
-        hint_w = w - hint_x - 1
-        if hint_w >= 6:
-            safe_addstr(stdscr, fy + 1, hint_x, fit_text("(ESC to clear)", hint_w),
+    if show_footer:
+        footer_y = h - 1
+        if input_buf:
+            prompt = fit_text(f"Search: {input_buf}_", max(1, w - 4))
+            safe_addstr(stdscr, footer_y, 2, prompt,
+                        curses.color_pair(C_ACCENT) | curses.A_BOLD)
+            hint_x = 2 + len(prompt) + 2
+            hint_w = w - hint_x - 1
+            if hint_w >= 6:
+                safe_addstr(stdscr, footer_y, hint_x, fit_text("(ESC to clear)", hint_w),
+                            curses.color_pair(C_DIM))
+        else:
+            safe_addstr(stdscr, footer_y, 2,
+                        fit_text("↑↓ Nav  Enter Select  Type to search  Q Quit", max(1, w - 4)),
                         curses.color_pair(C_DIM))
-    else:
-        safe_addstr(stdscr, fy + 1, 2,
-                    fit_text("↑↓ Nav  Enter Select  Type to search  Q Quit", max(1, w - 4)),
-                    curses.color_pair(C_DIM))
 
     stdscr.refresh()
 
@@ -776,13 +793,7 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
     stdscr.erase()
     h, w = stdscr.getmaxyx()
 
-    # ── Build header adaptively based on available height ──
-    # Tiny  (h<6):  no header at all, just practice lines from row 0
-    # Small (h<10): one combined info row + stats
-    # Medium(h<18): title + combined info row
-    # Full  (h>=18): title + lesson + keys + hlines
-
-    # Stats string (used in all modes)
+    # Stats string (used in all header modes)
     elapsed = time.time() - start_time if start_time else 0
     if elapsed > 0 and total_typed > 0:
         wpm = (total_typed / 5.0) / (elapsed / 60.0)
@@ -794,25 +805,8 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
     errors = total_typed - total_correct
     stats = f"{wpm_str}  {acc_str}  Err: {errors}"
 
-    if h < 6:
-        # Tiny: no header, just squeeze stats onto row 0
-        safe_addstr(stdscr, 0, max(0, w - len(stats) - 1), stats, curses.color_pair(C_ACCENT))
-        base_y = 1
-    elif h < 10:
-        # Small: one info line with stats on the right
-        info = f"{lesson['name']}"
-        safe_addstr(stdscr, 0, 1, info, curses.color_pair(C_TITLE))
-        safe_addstr(stdscr, 0, max(len(info) + 3, w - len(stats) - 1), stats, curses.color_pair(C_ACCENT))
-        base_y = 2
-    elif h < 18:
-        # Medium: title + compact info
-        safe_addstr(stdscr, 0, 2, "TERMINAL TYPING TUTOR", curses.color_pair(C_TITLE) | curses.A_BOLD)
-        safe_addstr(stdscr, 0, max(2, w - len(stats) - 2), stats, curses.color_pair(C_ACCENT))
-        draw_hline(stdscr, 1, 2, min(60, w - 4))
-        info = fit_text(f"{lesson['name']}  Keys: {lesson['keys']}", max(1, w - 4))
-        safe_addstr(stdscr, 2, 2, info, curses.color_pair(C_TITLE))
-        base_y = 4
-    else:
+    base_y = 0
+    if h >= 18:
         # Full layout
         safe_addstr(stdscr, 0, 2, "TERMINAL TYPING TUTOR", curses.color_pair(C_TITLE) | curses.A_BOLD)
         safe_addstr(stdscr, 0, max(2, w - len(stats) - 2), stats, curses.color_pair(C_ACCENT))
@@ -824,19 +818,39 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
         safe_addstr(stdscr, 3, 2, keys_str, curses.color_pair(C_DIM))
         draw_hline(stdscr, 4, 2, min(60, w - 4))
         base_y = 6
+    elif h >= 10:
+        # Medium: title + compact info
+        safe_addstr(stdscr, 0, 2, "TERMINAL TYPING TUTOR", curses.color_pair(C_TITLE) | curses.A_BOLD)
+        safe_addstr(stdscr, 0, max(2, w - len(stats) - 2), stats, curses.color_pair(C_ACCENT))
+        draw_hline(stdscr, 1, 2, min(60, w - 4))
+        info = fit_text(f"{lesson['name']}  Keys: {lesson['keys']}", max(1, w - 4))
+        safe_addstr(stdscr, 2, 2, info, curses.color_pair(C_TITLE))
+        base_y = 4
+    elif h >= 6:
+        # Small: one info line with stats on the right
+        info = f"{lesson['name']}"
+        safe_addstr(stdscr, 0, 1, info, curses.color_pair(C_TITLE))
+        safe_addstr(stdscr, 0, max(len(info) + 3, w - len(stats) - 1), stats, curses.color_pair(C_ACCENT))
+        base_y = 2
 
-    # Decide line spacing based on available height
-    footer_rows = 3  # bar + gap + footer
-    avail_for_lines = h - base_y - footer_rows
-    spacing = 2 if avail_for_lines >= len(lines) * 2 else 1
+    show_footer = h >= 4
+    show_progress = h >= 5
+    footer_rows = 1 if show_footer else 0
+    progress_rows = 1 if show_progress else 0
+    practice_h = max(1, h - base_y - progress_rows - footer_rows)
+    spacing = 2 if practice_h >= len(lines) * 2 - 1 else 1
+    visible_count = min(len(lines), max(1, 1 + max(0, practice_h - 1) // spacing))
+    first_visible_line = _focused_view_start(len(lines), cur_line, visible_count)
 
     line_x = practice_left_x(w)
 
-    # Practice lines
-    for li, line in enumerate(lines):
-        y = base_y + li * spacing
-        if y >= h - footer_rows:
+    # Practice lines (keep the active typing line visible as space shrinks)
+    for screen_idx, li in enumerate(range(first_visible_line,
+                                         min(len(lines), first_visible_line + visible_count))):
+        y = base_y + screen_idx * spacing
+        if y >= base_y + practice_h or y >= h:
             break
+        line = lines[li]
         for ci, ch in enumerate(line):
             x = line_x + ci
             if x >= w - 1:
@@ -855,12 +869,12 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
             else:
                 safe_addstr(stdscr, y, x, ch, curses.color_pair(C_DIM))
 
-    # Progress bar (only if room)
+    # Progress bar (only when it does not displace the practice line area)
     total_chars = sum(len(l) for l in lines)
     typed_chars = sum(len(t) for t in typed)
     pct = typed_chars / total_chars if total_chars else 0
-    bar_y = base_y + len(lines) * spacing
-    if bar_y < h - 1:
+    if show_progress:
+        bar_y = h - footer_rows - 1
         bar_w = min(40, w - line_x - 4)
         if bar_w > 4:
             filled = int(pct * bar_w)
@@ -868,8 +882,10 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
             safe_addstr(stdscr, bar_y, line_x, bar, curses.color_pair(C_ACCENT))
             safe_addstr(stdscr, bar_y, line_x + bar_w + 1, f"{pct*100:.0f}%", curses.color_pair(C_DIM))
 
-    # Footer
-    safe_addstr(stdscr, h - 1, 2, fit_text("ESC: Menu  TAB: Restart", max(1, w - 4)), curses.color_pair(C_DIM))
+    if show_footer:
+        safe_addstr(stdscr, h - 1, 2,
+                    fit_text("ESC: Menu  TAB: Restart", max(1, w - 4)),
+                    curses.color_pair(C_DIM))
 
     stdscr.refresh()
 
