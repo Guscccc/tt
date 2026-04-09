@@ -1,0 +1,1136 @@
+#!/usr/bin/env python3
+"""
+tt - Terminal Touch Typing Tutor
+
+A minimal, cross-platform terminal typing tutor with finger-specific lessons
+covering all keys including the number row and symbols.
+
+Usage:  python3 tt.py
+Requires: Python 3.6+  (Windows: pip install windows-curses)
+"""
+
+import curses
+import json
+import os
+import time
+import random
+import sys
+
+# Make ESC key responsive (default 1000ms delay is painful)
+os.environ.setdefault("ESCDELAY", "25")
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# COLOR PAIR IDS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+C_CORRECT = 1
+C_WRONG = 2
+C_DIM = 3
+C_TITLE = 4
+C_ACCENT = 5
+C_CURSOR = 6
+C_HEADING = 7
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# WORD POOL  (common English words for realistic practice)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WORD_POOL = [
+    "a", "an", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is",
+    "it", "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we",
+    "add", "age", "ago", "air", "all", "and", "any", "are", "arm", "art",
+    "ask", "bad", "bag", "bed", "big", "bit", "box", "boy", "bus", "but",
+    "buy", "can", "car", "cup", "cut", "day", "did", "die", "dog", "dry",
+    "ear", "eat", "end", "eye", "far", "few", "fly", "for", "fun", "gas",
+    "get", "god", "got", "gun", "guy", "had", "has", "hat", "her", "him",
+    "his", "hit", "hot", "how", "its", "job", "key", "kid", "lay", "leg",
+    "let", "lie", "lot", "low", "man", "map", "may", "men", "mix", "new",
+    "nor", "not", "now", "odd", "off", "oil", "old", "one", "our", "out",
+    "own", "pay", "per", "put", "ran", "red", "rid", "run", "sad", "sat",
+    "saw", "say", "set", "she", "sir", "sit", "six", "son", "ten", "the",
+    "too", "top", "try", "two", "use", "war", "was", "way", "who", "why",
+    "win", "won", "yes", "yet", "you", "able", "also", "area", "army",
+    "away", "back", "ball", "bank", "base", "bear", "beat", "been", "best",
+    "bill", "blue", "body", "book", "born", "both", "burn", "call", "came",
+    "card", "care", "case", "cell", "city", "cold", "come", "cook", "copy",
+    "cost", "dark", "data", "date", "dead", "deal", "deep", "door", "down",
+    "draw", "drop", "drug", "each", "east", "easy", "edge", "else", "even",
+    "ever", "face", "fact", "fail", "fair", "fall", "farm", "fast", "fear",
+    "feel", "feet", "fill", "film", "find", "fine", "fire", "firm", "fish",
+    "five", "food", "foot", "form", "four", "free", "from", "full", "fund",
+    "game", "girl", "give", "glad", "goal", "goes", "gold", "gone", "good",
+    "grow", "hair", "half", "hall", "hand", "hang", "hard", "hate", "have",
+    "head", "hear", "heat", "help", "here", "hero", "high", "hill", "hold",
+    "hole", "home", "hope", "hour", "huge", "idea", "into", "item", "join",
+    "just", "keep", "kill", "kind", "king", "knew", "know", "lack", "land",
+    "last", "late", "lead", "left", "less", "life", "lift", "like", "line",
+    "link", "list", "live", "long", "look", "lord", "lose", "loss", "lost",
+    "love", "luck", "made", "main", "make", "male", "many", "mark", "mass",
+    "mind", "miss", "mode", "more", "most", "move", "much", "must", "name",
+    "near", "need", "news", "next", "nice", "nine", "none", "note", "once",
+    "only", "open", "over", "page", "paid", "pain", "pair", "park", "part",
+    "pass", "past", "path", "pick", "plan", "play", "plus", "poor", "pull",
+    "push", "race", "rain", "rate", "read", "real", "rest", "rich", "ride",
+    "ring", "rise", "risk", "road", "rock", "role", "room", "rule", "safe",
+    "said", "sale", "same", "save", "seek", "seem", "self", "sell", "send",
+    "ship", "shot", "show", "shut", "side", "sign", "site", "size", "skin",
+    "slow", "snow", "soft", "soil", "sold", "some", "song", "soon", "sort",
+    "soul", "spot", "star", "stay", "step", "stop", "such", "suit", "sure",
+    "take", "talk", "tall", "task", "team", "tell", "tend", "term", "test",
+    "text", "than", "that", "them", "then", "they", "thin", "this", "thus",
+    "till", "time", "tiny", "told", "tone", "took", "tool", "tour", "town",
+    "tree", "trip", "true", "turn", "type", "unit", "upon", "used", "user",
+    "vary", "very", "view", "vote", "wage", "wait", "wake", "walk", "wall",
+    "want", "warm", "wash", "wave", "weak", "wear", "week", "well", "went",
+    "were", "west", "what", "when", "whom", "wide", "wife", "wild", "will",
+    "wind", "wine", "wing", "wire", "wise", "wish", "with", "wood", "word",
+    "work", "yard", "year", "your", "zero", "zone", "about", "above",
+    "after", "again", "agree", "ahead", "allow", "along", "among", "apply",
+    "avoid", "basic", "begin", "being", "below", "black", "block", "blood",
+    "board", "brain", "bread", "break", "bring", "broad", "brown", "build",
+    "carry", "catch", "cause", "chain", "chair", "cheap", "check", "chief",
+    "child", "civil", "claim", "class", "clean", "clear", "climb", "close",
+    "coach", "coast", "color", "could", "count", "court", "cover", "crash",
+    "cross", "crowd", "dance", "death", "depth", "dirty", "doubt", "draft",
+    "dream", "dress", "drink", "drive", "earth", "eight", "empty", "enemy",
+    "enjoy", "enter", "equal", "error", "event", "every", "exact", "exist",
+    "extra", "faith", "false", "fault", "field", "fifth", "fifty", "fight",
+    "final", "first", "fixed", "flash", "floor", "focus", "force", "found",
+    "frame", "fresh", "front", "fruit", "funny", "given", "glass", "going",
+    "grace", "grade", "grand", "grant", "grass", "great", "green", "gross",
+    "group", "grown", "guard", "guess", "guide", "happy", "heart", "heavy",
+    "horse", "hotel", "house", "human", "ideal", "image", "index", "inner",
+    "input", "issue", "judge", "knife", "knock", "known", "large", "later",
+    "laugh", "layer", "learn", "leave", "level", "light", "limit", "lived",
+    "local", "loose", "lover", "lucky", "lunch", "magic", "major", "match",
+    "maybe", "mayor", "media", "metal", "might", "minor", "minus", "model",
+    "money", "month", "moral", "motor", "mount", "mouth", "music", "night",
+    "noise", "north", "novel", "nurse", "offer", "often", "order", "other",
+    "ought", "outer", "owner", "paint", "panel", "paper", "party", "peace",
+    "phone", "photo", "piece", "pilot", "pitch", "place", "plain", "plant",
+    "plate", "point", "pound", "power", "press", "price", "pride", "prime",
+    "print", "prior", "proof", "proud", "prove", "queen", "quick", "quiet",
+    "quite", "quote", "radio", "raise", "range", "rapid", "ratio", "reach",
+    "ready", "refer", "reign", "relax", "reply", "right", "rival", "river",
+    "youth", "rough", "round", "route", "royal", "rural", "saint", "scale",
+    "scene", "scope", "score", "sense", "serve", "seven", "shall", "shape",
+    "share", "sharp", "sheet", "shelf", "shell", "shift", "shirt", "shock",
+    "shoot", "shore", "short", "shout", "sight", "since", "sixty", "skill",
+    "sleep", "slide", "small", "smart", "smell", "smile", "smoke", "solid",
+    "solve", "sorry", "sound", "south", "space", "spare", "speak", "speed",
+    "spend", "split", "sport", "spray", "squad", "stack", "staff", "stage",
+    "stake", "stand", "start", "state", "steal", "steam", "steel", "steep",
+    "stick", "still", "stock", "stone", "stood", "store", "storm", "story",
+    "strip", "stuck", "study", "stuff", "style", "sugar", "super", "sweet",
+    "swing", "table", "taste", "teach", "thank", "theme", "thick", "thing",
+    "think", "third", "those", "three", "throw", "tight", "tired", "title",
+    "today", "total", "touch", "tough", "tower", "track", "trade", "train",
+    "treat", "trend", "trial", "trick", "troop", "truck", "truly", "trust",
+    "truth", "twice", "uncle", "under", "union", "unity", "until", "upper",
+    "urban", "usual", "valid", "value", "video", "virus", "visit", "vital",
+    "vocal", "voice", "waste", "watch", "water", "wheel", "where", "which",
+    "while", "white", "whole", "whose", "woman", "world", "worry", "worse",
+    "worst", "worth", "would", "write", "wrong", "wrote",
+]
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# LESSON DEFINITIONS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+LESSONS = [
+    # ── Home Row ──────────────────────────────────────────────────────────
+    {
+        "name": "Home Row",
+        "finger": "All fingers — home position",
+        "keys": "a s d f g h j k l ; : '",
+        "chars": "asdfghjkl;:'",
+    },
+    # ── Left Hand Fingers ─────────────────────────────────────────────────
+    {
+        "name": "Left Pinky",
+        "finger": "Left pinky finger",
+        "keys": "` ~ 1 ! q Q a A z Z",
+        "chars": "`~1!qQaAzZ",
+    },
+    {
+        "name": "Left Ring",
+        "finger": "Left ring finger",
+        "keys": "2 @ w W s S x X",
+        "chars": "2@wWsSxX",
+    },
+    {
+        "name": "Left Middle",
+        "finger": "Left middle finger",
+        "keys": "3 # e E d D c C",
+        "chars": "3#eEdDcC",
+    },
+    {
+        "name": "Left Index",
+        "finger": "Left index finger",
+        "keys": "4 $ 5 % r R t T f F g G v V b B",
+        "chars": "4$5%rRtTfFgGvVbB",
+    },
+    # ── Right Hand Fingers ────────────────────────────────────────────────
+    {
+        "name": "Right Index",
+        "finger": "Right index finger",
+        "keys": "6 ^ 7 & y Y u U h H j J n N m M",
+        "chars": "6^7&yYuUhHjJnNmM",
+    },
+    {
+        "name": "Right Middle",
+        "finger": "Right middle finger",
+        "keys": "8 * i I k K , <",
+        "chars": "8*iIkK,<",
+    },
+    {
+        "name": "Right Ring",
+        "finger": "Right ring finger",
+        "keys": "9 ( o O l L . >",
+        "chars": "9(oOlL.>",
+    },
+    {
+        "name": "Right Pinky",
+        "finger": "Right pinky finger",
+        "keys": "0 ) - _ = + p P [ { ] } \\ | ; : ' \" / ?",
+        "chars": "0)-_=+pP[{]}\\|;:'\"/?",
+    },
+    # ── Row-based ─────────────────────────────────────────────────────────
+    {
+        "name": "Top Row",
+        "finger": "All fingers — top letter row",
+        "keys": "q w e r t y u i o p [ ] { } \\ |",
+        "chars": "qwertyuiop[]{}\\|",
+    },
+    {
+        "name": "Bottom Row",
+        "finger": "All fingers — bottom letter row",
+        "keys": "z x c v b n m , . / < > ?",
+        "chars": "zxcvbnm,./<>?",
+    },
+    {
+        "name": "Number Row",
+        "finger": "All fingers — number row",
+        "keys": "` 1 2 3 4 5 6 7 8 9 0 - =",
+        "chars": "`1234567890-=",
+    },
+    {
+        "name": "Number Symbols",
+        "finger": "All fingers — shifted number row",
+        "keys": "~ ! @ # $ % ^ & * ( ) _ +",
+        "chars": "~!@#$%^&*()_+",
+    },
+    {
+        "name": "All Symbols",
+        "finger": "All fingers — shifted keys",
+        "keys": "All symbol & punctuation keys",
+        "chars": "~!@#$%^&*()_+{}|:\"<>?`-=[]\\;',./",
+    },
+    # ── Mixed Practice ────────────────────────────────────────────────────
+    {
+        "name": "Common Words",
+        "finger": "All fingers",
+        "keys": "All letters",
+        "chars": "abcdefghijklmnopqrstuvwxyz",
+        "words_only": True,
+    },
+    {
+        "name": "Full Keyboard",
+        "finger": "All fingers — everything",
+        "keys": "All keys",
+        "chars": ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                  "1234567890~!@#$%^&*()_+{}|:\"<>?`-=[]\\;',./"),
+    },
+]
+
+
+PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             ".tt_progress.json")
+SPARKLINE_BLOCKS = "  ▂▃▄▅▆▇█"
+
+
+def calculate_session_stats(total_correct, total_typed, elapsed):
+    """Return a normalized stats dict for a completed practice session."""
+    elapsed = max(float(elapsed), 0.0)
+    wpm = (total_typed / 5.0) / (elapsed / 60.0) if elapsed > 0 else 0.0
+    accuracy = (total_correct / total_typed * 100.0) if total_typed > 0 else 0.0
+    return {
+        "wpm": wpm,
+        "accuracy": accuracy,
+        "errors": max(0, total_typed - total_correct),
+        "chars": max(0, total_typed),
+        "correct": max(0, total_correct),
+        "elapsed": elapsed,
+    }
+
+
+def load_progress_history():
+    """Load persistent lesson performance history from disk."""
+    if not os.path.exists(PROGRESS_FILE):
+        return {"lessons": {}}
+
+    try:
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"lessons": {}}
+
+    lessons = data.get("lessons", {}) if isinstance(data, dict) else {}
+    if not isinstance(lessons, dict):
+        return {"lessons": {}}
+
+    normalized = {}
+    for lesson_name, sessions in lessons.items():
+        if isinstance(lesson_name, str) and isinstance(sessions, list):
+            normalized[lesson_name] = [entry for entry in sessions if isinstance(entry, dict)]
+    return {"lessons": normalized}
+
+
+def save_progress_history(history):
+    """Persist lesson performance history to disk."""
+    try:
+        with open(PROGRESS_FILE, "w", encoding="utf-8") as fh:
+            json.dump(history, fh, indent=2)
+    except OSError:
+        pass
+
+
+def record_lesson_session(lesson_name, session_stats):
+    """Append a completed session to the lesson's persistent history."""
+    history = load_progress_history()
+    lesson_history = history.setdefault("lessons", {}).setdefault(lesson_name, [])
+    lesson_history.append({
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "wpm": round(session_stats["wpm"], 2),
+        "accuracy": round(session_stats["accuracy"], 2),
+        "errors": int(session_stats["errors"]),
+        "chars": int(session_stats["chars"]),
+        "correct": int(session_stats["correct"]),
+        "elapsed": round(session_stats["elapsed"], 2),
+    })
+    save_progress_history(history)
+    return lesson_history
+
+
+def compress_series(values, width):
+    """Compress a series to fit within *width* points."""
+    if width <= 0 or not values:
+        return []
+    if len(values) <= width:
+        return list(values)
+
+    compressed = []
+    bucket_size = len(values) / float(width)
+    for i in range(width):
+        start = int(i * bucket_size)
+        end = max(start + 1, int((i + 1) * bucket_size))
+        bucket = values[start:end]
+        compressed.append(sum(bucket) / len(bucket))
+    return compressed
+
+
+def make_sparkline(values, width):
+    """Render a Unicode sparkline for *values* constrained to *width*."""
+    points = compress_series(values, width)
+    if not points:
+        return ""
+
+    low = min(points)
+    high = max(points)
+    if high - low < 1e-9:
+        return "▅" * len(points)
+
+    scale = len(SPARKLINE_BLOCKS) - 1
+    chars = []
+    for value in points:
+        idx = int(round((value - low) / (high - low) * scale))
+        idx = max(0, min(scale, idx))
+        chars.append(SPARKLINE_BLOCKS[idx])
+    return "".join(chars)
+
+
+def build_wpm_plot_lines(values, width, height):
+    """Build a multi-line ASCII bar chart for WPM history."""
+    if width <= 12 or height < 3:
+        return []
+
+    if not values:
+        return [fit_text("WPM: no history yet", width)]
+
+    label_w = 5
+    plot_w = width - label_w - 2
+    points = compress_series(values, plot_w)
+    if not points:
+        return [fit_text("WPM: no history yet", width)]
+
+    max_wpm = max(points)
+    min_wpm = min(points)
+    latest_wpm = points[-1]
+
+    # Chart dimensions
+    chart_height = height - 2 # Reserve 1 for title, 1 for x-axis/latest
+    if chart_height < 1:
+        chart_height = 1
+        
+    min_y = 0
+    max_y = max(max_wpm * 1.1, 10)  # 10% headroom
+
+    lines = [fit_text("WPM Progress:", width)]
+    
+    blocks = "  ▂▃▄▅▆▇█"
+
+    for row in range(chart_height - 1, -1, -1):
+        row_min_y = min_y + (max_y - min_y) * (row / chart_height)
+        row_max_y = min_y + (max_y - min_y) * ((row + 1) / chart_height)
+        
+        if row == chart_height - 1:
+            label = f"{int(max_y):>4} |"
+        elif row == 0:
+            label = f"{int(min_y):>4} |"
+        else:
+            label = "     |"
+            
+        row_chars = []
+        for p in points:
+            if p >= row_max_y:
+                row_chars.append("█")
+            elif p <= row_min_y:
+                row_chars.append(" ")
+            else:
+                fraction = (p - row_min_y) / (row_max_y - row_min_y)
+                idx = int(fraction * 8)
+                idx = max(0, min(8, idx))
+                row_chars.append(blocks[idx])
+                
+        lines.append(fit_text(label + "".join(row_chars), width))
+
+    # Add x-axis line
+    axis_line = "     +" + "-" * len(points)
+    latest_str = f" latest: {latest_wpm:.1f}"
+    if len(axis_line) + len(latest_str) <= width:
+        axis_line += latest_str
+        
+    lines.append(fit_text(axis_line, width))
+
+    return lines
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TEXT GENERATION
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def words_for_charset(chars):
+    """Return WORD_POOL words whose letters are all in *chars*."""
+    allowed = set(chars.lower())
+    return [w for w in WORD_POOL if all(c in allowed for c in w)]
+
+
+def generate_practice(lesson, width=55, num_lines=4):
+    """Build practice lines from a lesson's character set."""
+    width = max(1, width)
+    chars = lesson["chars"]
+
+    lower  = [c for c in chars if c.islower()]
+    upper  = [c for c in chars if c.isupper()]
+    digits = [c for c in chars if c.isdigit()]
+    syms   = [c for c in chars if not c.isalnum()]
+
+    fragments = []
+
+    # ── Words-only mode (Common Words lesson) ──
+    if lesson.get("words_only"):
+        pool = list(WORD_POOL)
+        random.shuffle(pool)
+        fragments = pool[:60]
+    else:
+        # Real English words matching the charset
+        matching = words_for_charset(chars)
+        if matching:
+            fragments += [random.choice(matching) for _ in range(22)]
+
+        # Random letter combos
+        if lower:
+            for _ in range(12):
+                n = random.randint(2, 5)
+                fragments.append("".join(random.choice(lower) for _ in range(n)))
+
+        # Capitalised combos
+        if upper and lower:
+            for _ in range(5):
+                n = random.randint(2, 4)
+                w = random.choice(upper) + "".join(random.choice(lower) for _ in range(n - 1))
+                fragments.append(w)
+
+        # Digit sequences
+        if digits:
+            for _ in range(8):
+                n = random.randint(1, 4)
+                fragments.append("".join(random.choice(digits) for _ in range(n)))
+
+        # Symbol sequences
+        if syms:
+            for _ in range(8):
+                n = random.randint(1, 3)
+                fragments.append("".join(random.choice(syms) for _ in range(n)))
+
+        # Fallback: random from full charset
+        all_c = list(chars)
+        if len(fragments) < 12:
+            for _ in range(20):
+                n = random.randint(2, 4)
+                fragments.append("".join(random.choice(all_c) for _ in range(n)))
+
+    random.shuffle(fragments)
+
+    # Ensure no fragment is wider than the available practice width.
+    # Without this, narrow terminals can hide part of a fragment while the
+    # input logic still expects the user to type the invisible remainder.
+    wrapped_fragments = []
+    for frag in fragments:
+        if len(frag) <= width:
+            wrapped_fragments.append(frag)
+            continue
+        for i in range(0, len(frag), width):
+            wrapped_fragments.append(frag[i:i + width])
+    fragments = wrapped_fragments
+
+    # ── Wrap into lines ──
+    lines, line = [], ""
+    for frag in fragments:
+        if line and len(line) + 1 + len(frag) > width:
+            lines.append(line)
+            line = frag
+            if len(lines) >= num_lines:
+                break
+        else:
+            line = (line + " " + frag) if line else frag
+    if line and len(lines) < num_lines:
+        lines.append(line)
+
+    # Pad if needed
+    all_c = list(chars)
+    while len(lines) < num_lines:
+        frags = ["".join(random.choice(all_c) for _ in range(random.randint(2, 5)))
+                  for _ in range(12)]
+        lines.append(" ".join(frags)[:width])
+
+    return lines
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# CURSES HELPERS
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def init_colors():
+    curses.start_color()
+    curses.use_default_colors()
+    curses.init_pair(C_CORRECT, curses.COLOR_GREEN, -1)
+    curses.init_pair(C_WRONG, curses.COLOR_WHITE, curses.COLOR_RED)
+    curses.init_pair(C_DIM, 8, -1)          # dark grey
+    curses.init_pair(C_TITLE, curses.COLOR_CYAN, -1)
+    curses.init_pair(C_ACCENT, curses.COLOR_YELLOW, -1)
+    curses.init_pair(C_CURSOR, curses.COLOR_BLACK, curses.COLOR_WHITE)
+    curses.init_pair(C_HEADING, curses.COLOR_MAGENTA, -1)
+
+
+def safe_addstr(win, y, x, text, attr=0):
+    """Write text, silently ignoring out-of-bounds writes."""
+    h, w = win.getmaxyx()
+    if y < 0 or y >= h or x >= w:
+        return
+    max_len = w - x - 1
+    if max_len <= 0:
+        return
+    try:
+        win.addstr(y, x, text[:max_len], attr)
+    except curses.error:
+        pass
+
+
+def fit_text(text, width):
+    """Clip text to *width*, adding ellipsis when there is room."""
+    if width <= 0:
+        return ""
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def practice_left_x(width):
+    """Return the left margin for practice text based on terminal width."""
+    return 2 if width < 12 else 4
+
+
+def draw_hline(win, y, x, width, char="─"):
+    safe_addstr(win, y, x, char * width, curses.color_pair(C_DIM))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MENU SCREEN  (scrollable)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MENU_SECTIONS = [
+    ("HOME ROW", [0]),
+    ("LEFT HAND", [1, 2, 3, 4]),
+    ("RIGHT HAND", [5, 6, 7, 8]),
+    ("ROWS", [9, 10, 11, 12, 13]),
+    ("PRACTICE", [14, 15]),
+]
+
+
+def _build_menu_rows():
+    """Pre-build the list of menu rows as (type, data) tuples."""
+    rows = []
+    for section_name, indices in MENU_SECTIONS:
+        rows.append(("heading", section_name))
+        for idx in indices:
+            rows.append(("lesson", idx))
+        rows.append(("blank", None))
+    return rows
+
+_MENU_ROWS = _build_menu_rows()
+
+
+def _selected_menu_pos(selected):
+    """Return the index into _MENU_ROWS that corresponds to the lesson *selected*."""
+    for i, (kind, data) in enumerate(_MENU_ROWS):
+        if kind == "lesson" and data == selected:
+            return i
+    return 0
+
+
+def draw_menu(stdscr, selected, input_buf=""):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+
+    # Title (always row 0-1)
+    title = "TERMINAL TYPING TUTOR"
+    safe_addstr(stdscr, 0, 2, title, curses.color_pair(C_TITLE) | curses.A_BOLD)
+    draw_hline(stdscr, 1, 2, min(len(title), w - 4))
+
+    # Available viewport for menu items: rows 3 .. h-3
+    top_y = 3
+    footer_h = 2           # hline + hint row
+    avail = h - top_y - footer_h
+    if avail < 1:
+        avail = 1
+
+    total_rows = len(_MENU_ROWS)
+    sel_pos = _selected_menu_pos(selected)
+
+    # Compute scroll offset so selected is visible
+    scroll = max(0, min(sel_pos - avail // 2, total_rows - avail))
+    scroll = max(scroll, 0)
+
+    for vi in range(avail):
+        ri = scroll + vi
+        if ri >= total_rows:
+            break
+        y = top_y + vi
+        kind, data = _MENU_ROWS[ri]
+        if kind == "heading":
+            safe_addstr(stdscr, y, 2, data, curses.color_pair(C_HEADING) | curses.A_BOLD)
+        elif kind == "lesson":
+            lesson = LESSONS[data]
+            num = data + 1
+            marker = "›" if data == selected else " "
+            attr = curses.A_REVERSE if data == selected else 0
+            label = fit_text(f" {marker} {num:>2}. {lesson['name']}", max(1, w - 4))
+            safe_addstr(stdscr, y, 2, label, attr | curses.color_pair(C_TITLE if data == selected else 0))
+
+            keys_col = max(2 + len(label) + 2, min(26, max(2, w // 2)))
+            max_keys = w - keys_col - 2
+            if max_keys >= 4:
+                keys_preview = fit_text(lesson["keys"], max_keys)
+                safe_addstr(stdscr, y, keys_col, keys_preview, curses.color_pair(C_DIM))
+        # "blank" rows are simply left empty
+
+    # Scroll indicators
+    if scroll > 0:
+        safe_addstr(stdscr, top_y, w - 3, "▲", curses.color_pair(C_DIM))
+    if scroll + avail < total_rows:
+        safe_addstr(stdscr, top_y + avail - 1, w - 3, "▼", curses.color_pair(C_DIM))
+
+    # Footer
+    fy = h - 2
+    draw_hline(stdscr, fy, 2, min(40, w - 4))
+
+    if input_buf:
+        prompt = fit_text(f"Search: {input_buf}_", max(1, w - 4))
+        safe_addstr(stdscr, fy + 1, 2, prompt,
+                    curses.color_pair(C_ACCENT) | curses.A_BOLD)
+        hint_x = 2 + len(prompt) + 2
+        hint_w = w - hint_x - 1
+        if hint_w >= 6:
+            safe_addstr(stdscr, fy + 1, hint_x, fit_text("(ESC to clear)", hint_w),
+                        curses.color_pair(C_DIM))
+    else:
+        safe_addstr(stdscr, fy + 1, 2,
+                    fit_text("↑↓ Nav  Enter Select  Type to search  Q Quit", max(1, w - 4)),
+                    curses.color_pair(C_DIM))
+
+    stdscr.refresh()
+
+
+def _match_lesson(query, idx):
+    """Score how well *query* matches lesson at *idx*.  Higher = better.  0 = no match."""
+    lesson = LESSONS[idx]
+    q = query.lower()
+    num_str = str(idx + 1)
+    name = lesson["name"].lower()
+    keys = lesson.get("keys", "").lower()
+    chars = lesson.get("chars", "").lower()
+
+    # Exact number match is top priority
+    if q == num_str:
+        return 1000
+    # Number prefix
+    if num_str.startswith(q) and q.isdigit():
+        return 900
+    # Exact name match
+    if q == name:
+        return 800
+    # Name starts with query
+    if name.startswith(q):
+        return 700
+    # Query is a substring of name
+    if q in name:
+        return 600
+    # Query is a substring of keys
+    if q in keys:
+        return 500
+    # Query is a substring of chars
+    if q in chars:
+        return 400
+    # All query chars exist in name+keys+chars
+    searchable = name + " " + keys + " " + chars
+    if all(c in searchable for c in q):
+        return 300
+    return 0
+
+
+def _find_best_match(query, total):
+    """Return the index of the best matching lesson, or -1."""
+    if not query:
+        return -1
+    best_score = 0
+    best_idx = -1
+    for i in range(total):
+        score = _match_lesson(query, i)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    return best_idx
+
+
+def run_menu(stdscr):
+    selected = 0
+    total = len(LESSONS)
+    input_buf = ""
+
+    while True:
+        draw_menu(stdscr, selected, input_buf)
+        key = stdscr.getch()
+
+        if key == curses.KEY_RESIZE:
+            continue
+
+        # ESC clears buffer, or quits if buffer empty
+        if key == 27:
+            if input_buf:
+                input_buf = ""
+            else:
+                return None
+            continue
+
+        if key in (ord('q'), ord('Q')) and not input_buf:
+            return None
+        elif key == curses.KEY_UP or (key == ord('k') and not input_buf):
+            input_buf = ""
+            selected = (selected - 1) % total
+        elif key == curses.KEY_DOWN or (key == ord('j') and not input_buf):
+            input_buf = ""
+            selected = (selected + 1) % total
+        elif key in (curses.KEY_ENTER, 10, 13, ord(' ')):
+            if input_buf:
+                input_buf = ""
+            return selected
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            input_buf = input_buf[:-1]
+            match = _find_best_match(input_buf, total)
+            if match >= 0:
+                selected = match
+        elif 32 <= key <= 126:
+            input_buf += chr(key)
+            match = _find_best_match(input_buf, total)
+            if match >= 0:
+                selected = match
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# TYPING PRACTICE SCREEN
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
+                  start_time, total_correct, total_typed):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+
+    # ── Build header adaptively based on available height ──
+    # Tiny  (h<6):  no header at all, just practice lines from row 0
+    # Small (h<10): one combined info row + stats
+    # Medium(h<18): title + combined info row
+    # Full  (h>=18): title + lesson + keys + hlines
+
+    # Stats string (used in all modes)
+    elapsed = time.time() - start_time if start_time else 0
+    if elapsed > 0 and total_typed > 0:
+        wpm = (total_typed / 5.0) / (elapsed / 60.0)
+        wpm_str = f"WPM: {wpm:.0f}"
+    else:
+        wpm_str = "WPM: --"
+    acc = (total_correct / total_typed * 100) if total_typed > 0 else 100.0
+    acc_str = f"Acc: {acc:.0f}%"
+    errors = total_typed - total_correct
+    stats = f"{wpm_str}  {acc_str}  Err: {errors}"
+
+    if h < 6:
+        # Tiny: no header, just squeeze stats onto row 0
+        safe_addstr(stdscr, 0, max(0, w - len(stats) - 1), stats, curses.color_pair(C_ACCENT))
+        base_y = 1
+    elif h < 10:
+        # Small: one info line with stats on the right
+        info = f"{lesson['name']}"
+        safe_addstr(stdscr, 0, 1, info, curses.color_pair(C_TITLE))
+        safe_addstr(stdscr, 0, max(len(info) + 3, w - len(stats) - 1), stats, curses.color_pair(C_ACCENT))
+        base_y = 2
+    elif h < 18:
+        # Medium: title + compact info
+        safe_addstr(stdscr, 0, 2, "TERMINAL TYPING TUTOR", curses.color_pair(C_TITLE) | curses.A_BOLD)
+        safe_addstr(stdscr, 0, max(2, w - len(stats) - 2), stats, curses.color_pair(C_ACCENT))
+        draw_hline(stdscr, 1, 2, min(60, w - 4))
+        info = fit_text(f"{lesson['name']}  Keys: {lesson['keys']}", max(1, w - 4))
+        safe_addstr(stdscr, 2, 2, info, curses.color_pair(C_TITLE))
+        base_y = 4
+    else:
+        # Full layout
+        safe_addstr(stdscr, 0, 2, "TERMINAL TYPING TUTOR", curses.color_pair(C_TITLE) | curses.A_BOLD)
+        safe_addstr(stdscr, 0, max(2, w - len(stats) - 2), stats, curses.color_pair(C_ACCENT))
+        draw_hline(stdscr, 1, 2, min(60, w - 4))
+        safe_addstr(stdscr, 2, 2, f"Lesson: {lesson['name']}", curses.color_pair(C_TITLE))
+        finger_col = min(28, w // 2)
+        safe_addstr(stdscr, 2, finger_col, f"({lesson['finger']})", curses.color_pair(C_DIM))
+        keys_str = fit_text(f"Keys: {lesson['keys']}", max(1, w - 4))
+        safe_addstr(stdscr, 3, 2, keys_str, curses.color_pair(C_DIM))
+        draw_hline(stdscr, 4, 2, min(60, w - 4))
+        base_y = 6
+
+    # Decide line spacing based on available height
+    footer_rows = 3  # bar + gap + footer
+    avail_for_lines = h - base_y - footer_rows
+    spacing = 2 if avail_for_lines >= len(lines) * 2 else 1
+
+    line_x = practice_left_x(w)
+
+    # Practice lines
+    for li, line in enumerate(lines):
+        y = base_y + li * spacing
+        if y >= h - footer_rows:
+            break
+        for ci, ch in enumerate(line):
+            x = line_x + ci
+            if x >= w - 1:
+                break
+
+            if li < cur_line or (li == cur_line and ci < cur_col):
+                typed_char = typed[li][ci] if ci < len(typed[li]) else None
+                if typed_char == ch:
+                    attr = curses.color_pair(C_CORRECT)
+                else:
+                    attr = curses.color_pair(C_WRONG)
+                    ch = typed_char if typed_char else ch
+                safe_addstr(stdscr, y, x, ch, attr)
+            elif li == cur_line and ci == cur_col:
+                safe_addstr(stdscr, y, x, ch, curses.color_pair(C_CURSOR))
+            else:
+                safe_addstr(stdscr, y, x, ch, curses.color_pair(C_DIM))
+
+    # Progress bar (only if room)
+    total_chars = sum(len(l) for l in lines)
+    typed_chars = sum(len(t) for t in typed)
+    pct = typed_chars / total_chars if total_chars else 0
+    bar_y = base_y + len(lines) * spacing
+    if bar_y < h - 1:
+        bar_w = min(40, w - line_x - 4)
+        if bar_w > 4:
+            filled = int(pct * bar_w)
+            bar = "█" * filled + "░" * (bar_w - filled)
+            safe_addstr(stdscr, bar_y, line_x, bar, curses.color_pair(C_ACCENT))
+            safe_addstr(stdscr, bar_y, line_x + bar_w + 1, f"{pct*100:.0f}%", curses.color_pair(C_DIM))
+
+    # Footer
+    safe_addstr(stdscr, h - 1, 2, fit_text("ESC: Menu  TAB: Restart", max(1, w - 4)), curses.color_pair(C_DIM))
+
+    stdscr.refresh()
+
+
+def _build_results_lines(w, h, lesson_name, session_stats, lesson_history):
+    """Build adaptive results-screen lines, including historical progress."""
+    wpm = session_stats["wpm"]
+    acc = session_stats["accuracy"]
+    errors = session_stats["errors"]
+    elapsed = session_stats["elapsed"]
+    total_typed = session_stats["chars"]
+    mins = int(elapsed) // 60
+    secs = int(elapsed) % 60
+
+    if acc >= 98 and wpm >= 60:
+        rating = "★★★ Excellent!"
+    elif acc >= 95 and wpm >= 40:
+        rating = "★★  Great job!"
+    elif acc >= 90:
+        rating = "★   Good, keep practicing!"
+    else:
+        rating = "    Keep at it!"
+
+    session_count = len(lesson_history)
+    history_wpm = [entry.get("wpm", 0.0) for entry in lesson_history]
+    history_acc = [entry.get("accuracy", 0.0) for entry in lesson_history]
+    best_wpm = max(history_wpm) if history_wpm else 0.0
+    avg_wpm = sum(history_wpm) / len(history_wpm) if history_wpm else 0.0
+    best_acc = max(history_acc) if history_acc else 0.0
+    avg_acc = sum(history_acc) / len(history_acc) if history_acc else 0.0
+
+    max_text_w = max(1, w - 4)
+    plot_w = max(8, min(48, max_text_w - 12))
+    wpm_plot = make_sparkline(history_wpm, plot_w) or "·"
+    acc_plot = make_sparkline(history_acc, plot_w) or "·"
+
+    title_attr = curses.color_pair(C_TITLE) | curses.A_BOLD
+    accent_attr = curses.color_pair(C_ACCENT) | curses.A_BOLD
+    dim_attr = curses.color_pair(C_DIM)
+
+    # ── Compact layout (h < 13): priority-threshold progressive content ──
+    # Each element has a threshold = minimum h at which it appears.
+    # Thresholds are set so total included lines == h at every height 1-12,
+    # with no trailing blank spacer row.
+    if h < 13:
+        sparkline_text = fit_text(f"WPM {wpm_plot}  latest {wpm:.1f}", max_text_w)
+        elements = [
+            (3, "RESULTS", title_attr),
+            (6, fit_text(lesson_name, max_text_w), dim_attr),
+            (1, fit_text(f"WPM {wpm:.1f}  Acc {acc:.1f}%  Err {errors}", max_text_w), accent_attr),
+            (9, fit_text(rating, max_text_w), accent_attr),
+            (12, "PROGRESS", title_attr),
+            (4, fit_text(f"Sessions {session_count}  Best {best_wpm:.1f} WPM", max_text_w), dim_attr),
+            (10, fit_text(f"Best Acc: {best_acc:.1f}%   Avg Acc: {avg_acc:.1f}%", max_text_w), dim_attr),
+            (5, sparkline_text, curses.color_pair(C_ACCENT)),
+            (7, fit_text(f"Acc trend: {acc_plot}", max_text_w), dim_attr),
+            (8, "─" * min(30, w - 3), dim_attr),
+            (11, fit_text(f"Time: {mins}:{secs:02d}  Chars: {total_typed}", max_text_w), dim_attr),
+            (2, fit_text("R: Retry  M: Menu  Q: Quit", max_text_w), dim_attr),
+        ]
+        return [(text, attr) for min_h, text, attr in elements if h >= min_h]
+
+    # ── Full layout (h >= 13): detailed stats + WPM chart ──
+    header = [
+        ("RESULTS", title_attr),
+        (fit_text(f"Lesson:  {lesson_name}", max_text_w), dim_attr),
+        (fit_text(f"WPM:     {wpm:.1f}", max_text_w), accent_attr),
+        (fit_text(f"Accuracy:{acc:.1f}%", max_text_w), accent_attr),
+        (fit_text(f"Errors:  {errors}   Time: {mins}:{secs:02d}   Chars: {total_typed}", max_text_w), dim_attr),
+        (fit_text(rating, max_text_w), accent_attr),
+    ]
+    if h >= 16:
+        header.append(("", 0))
+    header.extend([
+        ("PROGRESS", title_attr),
+        (fit_text(f"Sessions: {session_count}   Best WPM: {best_wpm:.1f}   Avg WPM: {avg_wpm:.1f}", max_text_w), dim_attr),
+        (fit_text(f"Best Acc: {best_acc:.1f}%   Avg Acc: {avg_acc:.1f}%", max_text_w), dim_attr),
+    ])
+
+    footer = [
+        ("─" * min(30, w - 3), dim_attr),
+        (fit_text("R: Retry  M: Menu  Q: Quit", max_text_w), dim_attr),
+    ]
+
+    sparkline_text = fit_text(f"WPM {wpm_plot}  latest {wpm:.1f}", max_text_w)
+    acc_trend_text = fit_text(f"Acc trend: {acc_plot}", max_text_w)
+
+    vis_h = h - len(header) - len(footer)
+    lines = list(header)
+
+    if vis_h >= 4:
+        # Bar chart (vis_h-1 rows) + acc trend
+        wpm_plot_lines = build_wpm_plot_lines(history_wpm, max_text_w, vis_h - 1)
+        if wpm_plot_lines:
+            for pl in wpm_plot_lines:
+                lines.append((pl, curses.color_pair(C_ACCENT)))
+        else:
+            lines.append((sparkline_text, curses.color_pair(C_ACCENT)))
+        lines.append((acc_trend_text, dim_attr))
+    elif vis_h == 3:
+        # Use a labeled sparkline summary so h=14 degrades monotonically into h=13
+        # without dropping and then reintroducing the accuracy trend.
+        lines.append((fit_text("WPM Progress:", max_text_w), curses.color_pair(C_ACCENT)))
+        lines.append((sparkline_text, curses.color_pair(C_ACCENT)))
+        lines.append((acc_trend_text, dim_attr))
+    elif vis_h == 2:
+        # Sparkline + acc trend
+        lines.append((sparkline_text, curses.color_pair(C_ACCENT)))
+        lines.append((acc_trend_text, dim_attr))
+    elif vis_h >= 1:
+        # Sparkline only
+        lines.append((sparkline_text, curses.color_pair(C_ACCENT)))
+
+    lines.extend(footer)
+    return lines
+
+
+def draw_results(stdscr, lesson_name, session_stats, lesson_history):
+    """Show results screen with persistent progress history."""
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+
+        for i, (text, attr) in enumerate(_build_results_lines(
+                w, h, lesson_name, session_stats, lesson_history)):
+            if i >= h:
+                break
+            safe_addstr(stdscr, i, 2, text, attr)
+
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key == curses.KEY_RESIZE:
+            continue
+        if key in (ord('r'), ord('R')):
+            return "retry"
+        if key in (ord('m'), ord('M'), 27):
+            return "menu"
+        if key in (ord('q'), ord('Q')):
+            return "quit"
+
+
+def run_practice(stdscr, lesson):
+    """Main typing practice loop.  Returns: 'menu', 'retry', or 'quit'."""
+    h, w = stdscr.getmaxyx()
+    line_width = min(55, max(1, w - practice_left_x(w) - 1))
+    # Adapt number of practice lines to terminal height
+    num_lines = 4
+    if h < 18:
+        num_lines = 3
+    if h < 14:
+        num_lines = 2
+    if h < 12:
+        num_lines = 1
+    lines = generate_practice(lesson, width=line_width, num_lines=num_lines)
+
+    typed = [[] for _ in lines]
+    cur_line = 0
+    cur_col = 0
+    start_time = None
+    total_correct = 0
+    total_typed = 0
+
+    curses.curs_set(0)  # hide hardware cursor
+
+    while True:
+        draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
+                      start_time, total_correct, total_typed)
+        key = stdscr.getch()
+
+        if key == curses.KEY_RESIZE:
+            continue
+
+        # ── Special keys ──
+        if key == 27:  # ESC
+            return "menu"
+        if key == 9:   # TAB → restart
+            return "retry"
+
+        # ── Backspace (works across lines) ──
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            if cur_col > 0:
+                cur_col -= 1
+                removed = typed[cur_line].pop()
+                total_typed -= 1
+                if removed == lines[cur_line][cur_col]:
+                    total_correct -= 1
+            elif cur_line > 0:
+                cur_line -= 1
+                cur_col = len(typed[cur_line]) - 1
+                removed = typed[cur_line].pop()
+                total_typed -= 1
+                if removed == lines[cur_line][cur_col]:
+                    total_correct -= 1
+            continue
+
+        # ── Printable characters ──
+        if 32 <= key <= 126:
+            ch = chr(key)
+            if start_time is None:
+                start_time = time.time()
+
+            if cur_line >= len(lines):
+                continue
+            if cur_col >= len(lines[cur_line]):
+                continue
+
+            expected = lines[cur_line][cur_col]
+            typed[cur_line].append(ch)
+            total_typed += 1
+            if ch == expected:
+                total_correct += 1
+
+            cur_col += 1
+
+            # End of line → next line
+            if cur_col >= len(lines[cur_line]):
+                cur_line += 1
+                cur_col = 0
+
+                # All lines done
+                if cur_line >= len(lines):
+                    elapsed = time.time() - start_time if start_time else 1
+                    session_stats = calculate_session_stats(total_correct,
+                                                            total_typed,
+                                                            elapsed)
+                    lesson_history = record_lesson_session(lesson["name"],
+                                                           session_stats)
+                    return draw_results(stdscr, lesson["name"], session_stats,
+                                        lesson_history)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# MAIN
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def main(stdscr):
+    init_colors()
+    curses.curs_set(0)
+    stdscr.keypad(True)
+    stdscr.timeout(-1)  # blocking reads
+
+    while True:
+        choice = run_menu(stdscr)
+        if choice is None:
+            break
+
+        lesson = LESSONS[choice]
+        while True:
+            result = run_practice(stdscr, lesson)
+            if result == "retry":
+                continue
+            elif result == "menu":
+                break
+            elif result == "quit":
+                return
+
+
+if __name__ == "__main__":
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        pass
+    print("Happy typing!")

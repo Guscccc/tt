@@ -1,0 +1,8 @@
+.tt_progress.json
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.coverage
+htmlcov/
+.venv/
+venv/
