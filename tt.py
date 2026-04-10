@@ -15,6 +15,7 @@ import json
 import os
 import random
 import sys
+import textwrap
 import time
 
 # Make ESC key responsive (default 1000ms delay is painful)
@@ -549,19 +550,17 @@ def words_for_charset(chars):
     return [w for w in load_word_pool() if all(c in allowed for c in w)]
 
 
-def generate_practice(lesson, width=55, num_lines=4):
-    """Build practice lines from a lesson's character set."""
-    width = max(1, width)
+def _generate_practice_fragments(lesson, count):
+    """Generate *count* lesson-appropriate fragments for practice text."""
+    count = max(1, int(count))
     chars = lesson["chars"]
-
-    lower  = [c for c in chars if c.islower()]
-    upper  = [c for c in chars if c.isupper()]
+    lower = [c for c in chars if c.islower()]
+    upper = [c for c in chars if c.isupper()]
     digits = [c for c in chars if c.isdigit()]
-    syms   = [c for c in chars if not c.isalnum()]
-
+    syms = [c for c in chars if not c.isalnum()]
+    all_c = list(chars)
     fragments = []
 
-    # ── Alternating row-jump mode ──
     if lesson.get("hand_alternating_groups"):
         hand_groups = {}
         for hand, groups in lesson["hand_alternating_groups"].items():
@@ -571,12 +570,9 @@ def generate_practice(lesson, width=55, num_lines=4):
 
         hands = [hand for hand, groups in hand_groups.items() if groups[0] and groups[1]]
         if hands:
-            for _ in range(32):
+            for _ in range(count):
                 n = random.randint(2, 6)
-                next_group_idx = {
-                    hand: random.randrange(2)
-                    for hand in hands
-                }
+                next_group_idx = {hand: random.randrange(2) for hand in hands}
                 frag_chars = []
                 for _ in range(n):
                     hand = random.choice(hands)
@@ -584,11 +580,12 @@ def generate_practice(lesson, width=55, num_lines=4):
                     frag_chars.append(random.choice(hand_groups[hand][group_idx]))
                     next_group_idx[hand] = 1 - group_idx
                 fragments.append("".join(frag_chars))
+            return fragments
 
-    elif lesson.get("alternating_groups"):
+    if lesson.get("alternating_groups"):
         groups = [list(group) for group in lesson["alternating_groups"] if group]
         if len(groups) >= 2:
-            for _ in range(32):
+            for _ in range(count):
                 n = random.randint(2, 6)
                 start_group = random.randrange(len(groups))
                 frag_chars = []
@@ -596,85 +593,116 @@ def generate_practice(lesson, width=55, num_lines=4):
                     group = groups[(start_group + i) % len(groups)]
                     frag_chars.append(random.choice(group))
                 fragments.append("".join(frag_chars))
+            return fragments
 
-    # ── Words-only mode (Common Words lesson) ──
-    elif lesson.get("words_only"):
+    if lesson.get("words_only"):
         pool = list(load_word_pool())
-        random.shuffle(pool)
-        fragments = pool[:60]
-    else:
-        # Real English words matching the charset
-        matching = words_for_charset(chars)
-        if matching:
-            fragments += [random.choice(matching) for _ in range(22)]
+        if pool:
+            for _ in range(count):
+                fragments.append(random.choice(pool))
+            return fragments
 
-        # Random letter combos
-        if lower:
-            for _ in range(12):
-                n = random.randint(2, 5)
-                fragments.append("".join(random.choice(lower) for _ in range(n)))
+    matching = words_for_charset(chars)
+    builders = []
+    if matching:
+        builders.append(lambda: random.choice(matching))
+    if lower:
+        builders.append(
+            lambda: "".join(random.choice(lower) for _ in range(random.randint(2, 5)))
+        )
+    if upper and lower:
+        builders.append(
+            lambda: random.choice(upper)
+            + "".join(random.choice(lower) for _ in range(random.randint(1, 3)))
+        )
+    if digits:
+        builders.append(
+            lambda: "".join(random.choice(digits) for _ in range(random.randint(1, 4)))
+        )
+    if syms:
+        builders.append(
+            lambda: "".join(random.choice(syms) for _ in range(random.randint(1, 3)))
+        )
+    if all_c:
+        builders.append(
+            lambda: "".join(random.choice(all_c) for _ in range(random.randint(2, 4)))
+        )
 
-        # Capitalised combos
-        if upper and lower:
-            for _ in range(5):
-                n = random.randint(2, 4)
-                w = random.choice(upper) + "".join(random.choice(lower) for _ in range(n - 1))
-                fragments.append(w)
+    if not builders:
+        return [""] * count
 
-        # Digit sequences
-        if digits:
-            for _ in range(8):
-                n = random.randint(1, 4)
-                fragments.append("".join(random.choice(digits) for _ in range(n)))
+    for _ in range(count):
+        fragments.append(random.choice(builders)())
+    return fragments
 
-        # Symbol sequences
-        if syms:
-            for _ in range(8):
-                n = random.randint(1, 3)
-                fragments.append("".join(random.choice(syms) for _ in range(n)))
 
-        # Fallback: random from full charset
-        all_c = list(chars)
-        if len(fragments) < 12:
-            for _ in range(20):
-                n = random.randint(2, 4)
-                fragments.append("".join(random.choice(all_c) for _ in range(n)))
-
-    random.shuffle(fragments)
-
-    # Ensure no fragment is wider than the available practice width.
-    # Without this, narrow terminals can hide part of a fragment while the
-    # input logic still expects the user to type the invisible remainder.
-    wrapped_fragments = []
+def _wrap_practice_fragments(fragments, width):
+    """Wrap overlong fragments so no fragment exceeds *width*."""
+    wrapped = []
     for frag in fragments:
         if len(frag) <= width:
-            wrapped_fragments.append(frag)
+            wrapped.append(frag)
             continue
         for i in range(0, len(frag), width):
-            wrapped_fragments.append(frag[i:i + width])
-    fragments = wrapped_fragments
+            wrapped.append(frag[i:i + width])
+    return wrapped
 
-    # ── Wrap into lines ──
-    lines, line = [], ""
-    for frag in fragments:
-        if line and len(line) + 1 + len(frag) > width:
-            lines.append(line)
-            line = frag
-            if len(lines) >= num_lines:
-                break
-        else:
-            line = (line + " " + frag) if line else frag
-    if line and len(lines) < num_lines:
-        lines.append(line)
 
-    # Pad if needed
+def generate_practice(lesson, width=55, num_lines=4):
+    """Build practice lines from a lesson's character set."""
+    width = max(1, width)
+    num_lines = max(1, num_lines)
+    chars = lesson["chars"]
+    fill_target = width if num_lines == 1 else max(1, int(round(width * (0.9 if num_lines == 2 else 0.75))))
+    min_total_chars = max(width * num_lines + fill_target, num_lines * 8)
+
+    fragments = []
+    batches = 0
+    while True:
+        text_len = sum(len(frag) for frag in fragments) + max(0, len(fragments) - 1)
+        if text_len >= min_total_chars and batches > 0:
+            break
+        fragments.extend(_generate_practice_fragments(lesson, max(12, width // 2, num_lines * 4)))
+        batches += 1
+        if batches >= 8:
+            break
+
+    wrapped_fragments = _wrap_practice_fragments(fragments, width)
+    lines = textwrap.wrap(
+        " ".join(wrapped_fragments),
+        width=width,
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+
+    refill_batches = 0
+    while (
+        len(lines) < num_lines
+        or (lines and len(lines[min(num_lines, len(lines)) - 1]) < fill_target)
+    ) and refill_batches < 8:
+        wrapped_fragments.extend(
+            _wrap_practice_fragments(
+                _generate_practice_fragments(lesson, max(8, width // 3, num_lines * 2)),
+                width,
+            )
+        )
+        lines = textwrap.wrap(
+            " ".join(wrapped_fragments),
+            width=width,
+            break_long_words=True,
+            break_on_hyphens=False,
+        )
+        refill_batches += 1
+
     all_c = list(chars)
     while len(lines) < num_lines:
-        frags = ["".join(random.choice(all_c) for _ in range(random.randint(2, 5)))
-                  for _ in range(12)]
+        frags = [
+            "".join(random.choice(all_c) for _ in range(random.randint(2, 5)))
+            for _ in range(12)
+        ]
         lines.append(" ".join(frags)[:width])
 
-    return lines
+    return lines[:num_lines]
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -728,6 +756,36 @@ def format_progress_sparkline(label, plot, width, suffix=""):
 def practice_left_x(width):
     """Return the left margin for practice text based on terminal width."""
     return 2 if width < 12 else 4
+
+
+def _practice_layout_flags(height):
+    """Return which practice-screen elements fit at a given terminal height."""
+    return {
+        "show_title": height >= 10,
+        "show_lesson": height >= 3,
+        "show_keys": height >= 14,
+        "show_status_top": 6 <= height < 10,
+        "show_status_bottom": 2 <= height < 6,
+        "show_progress": height >= 8,
+        "show_help": height >= 6,
+    }
+
+
+def practice_visible_lines(height):
+    """Return the number of practice-text rows visible for a terminal height."""
+    flags = _practice_layout_flags(height)
+    top_rows = (
+        int(flags["show_title"])
+        + int(flags["show_lesson"])
+        + int(flags["show_keys"])
+        + int(flags["show_status_top"])
+    )
+    bottom_rows = (
+        int(flags["show_status_bottom"])
+        + int(flags["show_progress"])
+        + int(flags["show_help"])
+    )
+    return max(1, height - top_rows - bottom_rows)
 
 
 def draw_hline(win, y, x, width, char="─"):
@@ -962,63 +1020,85 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
                   start_time, total_correct, total_typed):
     stdscr.erase()
     h, w = stdscr.getmaxyx()
+    flags = _practice_layout_flags(h)
 
-    # Stats string (used in all header modes)
     elapsed = time.time() - start_time if start_time else 0
     if elapsed > 0 and total_typed > 0:
         wpm = (total_typed / 5.0) / (elapsed / 60.0)
-        wpm_str = f"WPM: {wpm:.0f}"
+        wpm_value = f"{wpm:.0f}"
+        stats = f"WPM: {wpm:.0f}  Acc: {(total_correct / total_typed * 100):.0f}%  Err: {total_typed - total_correct}"
     else:
-        wpm_str = "WPM: --"
+        wpm = 0.0
+        wpm_value = "--"
+        stats = f"WPM: --  Acc: 100%  Err: {total_typed - total_correct}"
+
     acc = (total_correct / total_typed * 100) if total_typed > 0 else 100.0
-    acc_str = f"Acc: {acc:.0f}%"
     errors = total_typed - total_correct
-    stats = f"{wpm_str}  {acc_str}  Err: {errors}"
+    total_chars = sum(len(line) for line in lines)
+    typed_chars = sum(len(row) for row in typed)
+    pct = typed_chars / total_chars if total_chars else 0.0
+    progress_pct = int(round(pct * 100))
+    line_label = f"{min(cur_line + 1, len(lines))}/{len(lines)}"
+    compact_status = fit_text(
+        f"{wpm_value}W  {acc:.0f}%  E{errors}  {progress_pct}%  {line_label}",
+        max(1, w - 4),
+    )
 
-    base_y = 0
-    if h >= 18:
-        # Full layout
-        safe_addstr(stdscr, 0, 2, "TERMINAL TYPING TUTOR", curses.color_pair(C_TITLE) | curses.A_BOLD)
-        safe_addstr(stdscr, 0, max(2, w - len(stats) - 2), stats, curses.color_pair(C_ACCENT))
-        draw_hline(stdscr, 1, 2, min(60, w - 4))
-        safe_addstr(stdscr, 2, 2, f"Lesson: {lesson['name']}", curses.color_pair(C_TITLE))
-        finger_col = min(28, w // 2)
-        safe_addstr(stdscr, 2, finger_col, f"({lesson['finger']})", curses.color_pair(C_DIM))
-        keys_str = fit_text(f"Keys: {lesson['keys']}", max(1, w - 4))
-        safe_addstr(stdscr, 3, 2, keys_str, curses.color_pair(C_DIM))
-        draw_hline(stdscr, 4, 2, min(60, w - 4))
-        base_y = 6
-    elif h >= 10:
-        # Medium: title + compact info
-        safe_addstr(stdscr, 0, 2, "TERMINAL TYPING TUTOR", curses.color_pair(C_TITLE) | curses.A_BOLD)
-        safe_addstr(stdscr, 0, max(2, w - len(stats) - 2), stats, curses.color_pair(C_ACCENT))
-        draw_hline(stdscr, 1, 2, min(60, w - 4))
-        info = fit_text(f"{lesson['name']}  Keys: {lesson['keys']}", max(1, w - 4))
-        safe_addstr(stdscr, 2, 2, info, curses.color_pair(C_TITLE))
-        base_y = 4
-    elif h >= 6:
-        # Small: one info line with stats on the right
-        info = f"{lesson['name']}"
-        safe_addstr(stdscr, 0, 1, info, curses.color_pair(C_TITLE))
-        safe_addstr(stdscr, 0, max(len(info) + 3, w - len(stats) - 1), stats, curses.color_pair(C_ACCENT))
-        base_y = 2
+    top_y = 0
+    if flags["show_title"]:
+        title = "TERMINAL TYPING TUTOR"
+        safe_addstr(stdscr, top_y, 2, title, curses.color_pair(C_TITLE) | curses.A_BOLD)
+        safe_addstr(
+            stdscr,
+            top_y,
+            max(2, w - len(stats) - 2),
+            stats,
+            curses.color_pair(C_ACCENT),
+        )
+        top_y += 1
 
-    show_footer = h >= 4
-    show_progress = h >= 5
-    footer_rows = 1 if show_footer else 0
-    progress_rows = 1 if show_progress else 0
-    practice_h = max(1, h - base_y - progress_rows - footer_rows)
-    spacing = 2 if practice_h >= len(lines) * 2 - 1 else 1
-    visible_count = min(len(lines), max(1, 1 + max(0, practice_h - 1) // spacing))
+    if flags["show_lesson"]:
+        lesson_text = fit_text(f"{lesson['name']}  Line {line_label}", max(1, w - 4))
+        safe_addstr(stdscr, top_y, 2, lesson_text, curses.color_pair(C_TITLE))
+        top_y += 1
+
+    if flags["show_keys"]:
+        safe_addstr(
+            stdscr,
+            top_y,
+            2,
+            fit_text(f"Keys: {lesson['keys']}", max(1, w - 4)),
+            curses.color_pair(C_DIM),
+        )
+        top_y += 1
+
+    if flags["show_status_top"]:
+        safe_addstr(stdscr, top_y, 2, compact_status, curses.color_pair(C_ACCENT))
+        top_y += 1
+
+    bottom_y = h
+    status_y = None
+    progress_y = None
+    help_y = None
+    if flags["show_help"]:
+        bottom_y -= 1
+        help_y = bottom_y
+    if flags["show_progress"]:
+        bottom_y -= 1
+        progress_y = bottom_y
+    if flags["show_status_bottom"]:
+        bottom_y -= 1
+        status_y = bottom_y
+
+    practice_h = max(1, bottom_y - top_y)
+    visible_count = min(len(lines), practice_h)
     first_visible_line = _focused_view_start(len(lines), cur_line, visible_count)
-
     line_x = practice_left_x(w)
 
-    # Practice lines (keep the active typing line visible as space shrinks)
     for screen_idx, li in enumerate(range(first_visible_line,
                                          min(len(lines), first_visible_line + visible_count))):
-        y = base_y + screen_idx * spacing
-        if y >= base_y + practice_h or y >= h:
+        y = top_y + screen_idx
+        if y >= bottom_y or y >= h:
             break
         line = lines[li]
         for ci, ch in enumerate(line):
@@ -1044,23 +1124,40 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
             if cursor_x < w - 1:
                 safe_addstr(stdscr, y, cursor_x, " ", curses.color_pair(C_CURSOR))
 
-    # Progress bar
-    total_chars = sum(len(l) for l in lines)
-    typed_chars = sum(len(t) for t in typed)
-    pct = typed_chars / total_chars if total_chars else 0
-    if show_progress:
-        bar_y = h - footer_rows - 1
-        bar_w = min(40, w - line_x - 4)
-        if bar_w > 4:
-            filled = int(pct * bar_w)
-            bar = "█" * filled + "░" * (bar_w - filled)
-            safe_addstr(stdscr, bar_y, line_x, bar, curses.color_pair(C_ACCENT))
-            safe_addstr(stdscr, bar_y, line_x + bar_w + 1, f"{pct*100:.0f}%", curses.color_pair(C_DIM))
+    if status_y is not None:
+        safe_addstr(stdscr, status_y, 2, compact_status, curses.color_pair(C_ACCENT))
 
-    if show_footer:
-        safe_addstr(stdscr, h - 1, 2,
-                    fit_text("ESC: Menu  TAB: Restart  Space/Enter: Next line", max(1, w - 4)),
-                    curses.color_pair(C_DIM))
+    if progress_y is not None:
+        progress_text = f"{progress_pct}%  {typed_chars}/{total_chars}"
+        bar_w = min(28, w - line_x - len(progress_text) - 3)
+        if bar_w >= 8:
+            filled = int(round(pct * bar_w))
+            bar = "█" * filled + "░" * (bar_w - filled)
+            safe_addstr(stdscr, progress_y, line_x, bar, curses.color_pair(C_ACCENT))
+            safe_addstr(
+                stdscr,
+                progress_y,
+                line_x + bar_w + 1,
+                progress_text,
+                curses.color_pair(C_DIM),
+            )
+        else:
+            safe_addstr(
+                stdscr,
+                progress_y,
+                2,
+                fit_text(f"Progress {progress_text}", max(1, w - 4)),
+                curses.color_pair(C_DIM),
+            )
+
+    if help_y is not None:
+        safe_addstr(
+            stdscr,
+            help_y,
+            2,
+            fit_text("ESC Menu  TAB Restart  Enter/Space Next", max(1, w - 4)),
+            curses.color_pair(C_DIM),
+        )
 
     stdscr.refresh()
 
@@ -1209,14 +1306,8 @@ def run_practice(stdscr, lesson):
     """Main typing practice loop.  Returns: 'menu', 'retry', or 'quit'."""
     h, w = stdscr.getmaxyx()
     line_width = min(55, max(1, w - practice_left_x(w) - 1))
-    # Adapt number of practice lines to terminal height
-    num_lines = 4
-    if h < 18:
-        num_lines = 3
-    if h < 14:
-        num_lines = 2
-    if h < 12:
-        num_lines = 1
+    visible_lines = practice_visible_lines(h)
+    num_lines = visible_lines + (1 if visible_lines >= 4 else 0)
     lines = generate_practice(lesson, width=line_width, num_lines=num_lines)
     lines = [line + (" " if i < len(lines) - 1 else "")
              for i, line in enumerate(lines)]
