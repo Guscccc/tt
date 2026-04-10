@@ -275,6 +275,27 @@ def test_generate_practice_words_only_lesson_respects_width():
     assert all(len(line) <= 10 for line in lines)
 
 
+def test_generate_practice_small_height_lines_are_dense():
+    tt.random.seed(3)
+    lesson = {
+        "name": "Synthetic",
+        "finger": "All fingers",
+        "keys": "a b c",
+        "chars": "abc",
+    }
+
+    one_line = tt.generate_practice(lesson, width=12, num_lines=1)
+    two_lines = tt.generate_practice(lesson, width=12, num_lines=2)
+    three_lines = tt.generate_practice(lesson, width=12, num_lines=3)
+
+    assert len(one_line) == 1
+    assert len(two_lines) == 2
+    assert len(three_lines) == 3
+    assert len(one_line[0]) >= 11
+    assert all(len(line) >= 11 for line in two_lines)
+    assert all(len(line) >= 10 for line in three_lines)
+
+
 def test_generate_practice_row_jump_lesson_alternates_rows_per_hand():
     tt.random.seed(2)
     lesson = next(lesson for lesson in tt.LESSONS if lesson["name"] == "Home ↔ Number Row")
@@ -725,8 +746,69 @@ def test_draw_practice_one_line_shows_active_typing_line_only(monkeypatch):
 
     assert char_texts
     assert set(char_texts) == {"c"}
-    assert all("ESC: Menu" not in text for text in other_texts)
+    assert all("ESC Menu" not in text for text in other_texts)
     assert all("WPM:" not in text for text in other_texts)
+
+
+@pytest.mark.parametrize(
+    ("height", "expected_visible"),
+    [
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (4, 4),
+        (5, 4),
+        (6, 4),
+        (7, 4),
+        (8, 4),
+        (9, 4),
+        (10, 5),
+    ],
+)
+def test_practice_visible_lines_prioritizes_practice_rows(height, expected_visible):
+    assert tt.practice_visible_lines(height) == expected_visible
+
+
+def test_draw_practice_two_line_height_uses_both_lines_for_practice(monkeypatch):
+    monkeypatch.setattr(tt.time, "time", lambda: 100.0)
+    screen = FakeScreen(height=2, width=20)
+    lesson = {"name": "Test", "finger": "All", "keys": "a b c", "chars": "abc"}
+    lines = ["aaaa", "bbbb", "cccc"]
+    typed = [["a"], [], []]
+
+    tt.draw_practice(screen, lesson, lines, typed, cur_line=0, cur_col=1,
+                     start_time=90.0, total_correct=1, total_typed=1)
+
+    rendered_rows = {
+        call[1]
+        for call in screen.calls
+        if call[0] == "addstr" and len(call[3]) == 1
+    }
+    other_texts = [call[3] for call in screen.calls if call[0] == "addstr" and len(call[3]) > 1]
+
+    assert rendered_rows == {0, 1}
+    assert all("WPM" not in text for text in other_texts)
+    assert all("Line" not in text for text in other_texts)
+
+
+def test_practice_layout_dump_is_monotonic():
+    previous_visible = None
+    previous_reserved = None
+
+    for height in range(12, 0, -1):
+        layout = tt._practice_layout(height)
+        reserved = height - layout["practice_rows"]
+        print(f"h={height:2d} reserved={reserved} layout={layout}")
+
+        assert layout["practice_rows"] >= 1
+        assert layout["practice_rows"] + reserved == height
+
+        if previous_visible is not None:
+            assert layout["practice_rows"] <= previous_visible
+            assert reserved <= previous_reserved
+
+        previous_visible = layout["practice_rows"]
+        previous_reserved = reserved
 
 
 @pytest.mark.parametrize(

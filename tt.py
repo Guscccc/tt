@@ -648,61 +648,129 @@ def _wrap_practice_fragments(fragments, width):
     return wrapped
 
 
+def _practice_fill_target(width, num_lines, line_idx):
+    """Return the minimum useful fill width for a generated practice line."""
+    width = max(1, int(width))
+    num_lines = max(1, int(num_lines))
+    line_idx = max(0, int(line_idx))
+
+    if num_lines <= 2:
+        ratio = 0.98
+    elif num_lines == 3:
+        ratio = 0.9
+    elif num_lines == 4:
+        ratio = 0.84
+    else:
+        ratio = 0.75
+
+    target = max(1, int(round(width * ratio)))
+    if line_idx == num_lines - 1:
+        target = max(1, min(width, target - 1))
+    return target
+
+
+def _fallback_practice_line(chars, width):
+    """Return a dense synthetic fallback line for pathological generation cases."""
+    all_c = list(chars)
+    if not all_c:
+        return ""
+
+    fragments = []
+    while True:
+        frag = "".join(random.choice(all_c) for _ in range(random.randint(2, 5)))
+        extra = len(frag) + (1 if fragments else 0)
+        current_len = sum(len(part) for part in fragments) + max(0, len(fragments) - 1)
+        if fragments and current_len + extra > width:
+            break
+        if not fragments and len(frag) > width:
+            frag = frag[:width]
+        fragments.append(frag)
+        current_len = sum(len(part) for part in fragments) + max(0, len(fragments) - 1)
+        if current_len >= width:
+            break
+    return " ".join(fragments)[:width]
+
+
+def _build_practice_line(fragment_pool, width, min_fill, allow_blank=False):
+    """Pack fragments into a single dense practice line."""
+    width = max(1, int(width))
+    min_fill = max(1, min(width, int(min_fill)))
+    line = ""
+    attempts = 0
+
+    while len(line) < min_fill and attempts < 64:
+        attempts += 1
+        if not fragment_pool:
+            break
+        frag = fragment_pool.pop(0)
+        if not frag:
+            continue
+
+        if not line:
+            line = frag[:width]
+            if len(line) >= width:
+                break
+            continue
+
+        candidate = f"{line} {frag}"
+        if len(candidate) <= width:
+            line = candidate
+            if len(line) >= width:
+                break
+            continue
+
+        remaining = width - len(line) - 1
+        if remaining <= 0:
+            break
+
+        if len(line) < min_fill and len(frag) > remaining:
+            line = f"{line} {frag[:remaining]}"
+        else:
+            fragment_pool.insert(0, frag)
+        break
+
+    if not line and allow_blank:
+        return ""
+    return line[:width]
+
+
 def generate_practice(lesson, width=55, num_lines=4):
     """Build practice lines from a lesson's character set."""
     width = max(1, width)
     num_lines = max(1, num_lines)
     chars = lesson["chars"]
-    fill_target = width if num_lines == 1 else max(1, int(round(width * (0.9 if num_lines == 2 else 0.75))))
-    min_total_chars = max(width * num_lines + fill_target, num_lines * 8)
 
-    fragments = []
-    batches = 0
-    while True:
-        text_len = sum(len(frag) for frag in fragments) + max(0, len(fragments) - 1)
-        if text_len >= min_total_chars and batches > 0:
-            break
-        fragments.extend(_generate_practice_fragments(lesson, max(12, width // 2, num_lines * 4)))
-        batches += 1
-        if batches >= 8:
-            break
+    fragment_pool = []
 
-    wrapped_fragments = _wrap_practice_fragments(fragments, width)
-    lines = textwrap.wrap(
-        " ".join(wrapped_fragments),
-        width=width,
-        break_long_words=True,
-        break_on_hyphens=False,
-    )
-
-    refill_batches = 0
-    while (
-        len(lines) < num_lines
-        or (lines and len(lines[min(num_lines, len(lines)) - 1]) < fill_target)
-    ) and refill_batches < 8:
-        wrapped_fragments.extend(
-            _wrap_practice_fragments(
-                _generate_practice_fragments(lesson, max(8, width // 3, num_lines * 2)),
-                width,
+    def ensure_fragments(min_count):
+        batches = 0
+        while len(fragment_pool) < min_count and batches < 8:
+            fragment_pool.extend(
+                _wrap_practice_fragments(
+                    _generate_practice_fragments(
+                        lesson,
+                        max(12, width // 2, num_lines * 4),
+                    ),
+                    width,
+                )
             )
-        )
-        lines = textwrap.wrap(
-            " ".join(wrapped_fragments),
-            width=width,
-            break_long_words=True,
-            break_on_hyphens=False,
-        )
-        refill_batches += 1
+            batches += 1
 
-    all_c = list(chars)
-    while len(lines) < num_lines:
-        frags = [
-            "".join(random.choice(all_c) for _ in range(random.randint(2, 5)))
-            for _ in range(12)
-        ]
-        lines.append(" ".join(frags)[:width])
+    ensure_fragments(max(16, num_lines * 6))
 
-    return lines[:num_lines]
+    lines = []
+    for line_idx in range(num_lines):
+        ensure_fragments(8)
+        line = _build_practice_line(
+            fragment_pool,
+            width,
+            _practice_fill_target(width, num_lines, line_idx),
+        )
+        if not line:
+            line = _fallback_practice_line(chars, width)
+        lines.append(line)
+
+    return lines
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -758,34 +826,66 @@ def practice_left_x(width):
     return 2 if width < 12 else 4
 
 
-def _practice_layout_flags(height):
-    """Return which practice-screen elements fit at a given terminal height."""
-    return {
-        "show_title": height >= 10,
-        "show_lesson": height >= 3,
+def _practice_layout(height):
+    """Return an adaptive practice-screen layout for the given terminal height."""
+    height = max(1, int(height))
+
+    if height <= 2:
+        return {
+            "show_title": False,
+            "show_lesson": False,
+            "show_keys": False,
+            "show_status_top": False,
+            "show_status_bottom": False,
+            "show_progress": False,
+            "show_help": False,
+            "practice_rows": height,
+        }
+
+    layout = {
+        "show_title": height >= 9,
+        "show_lesson": height >= 5,
         "show_keys": height >= 14,
-        "show_status_top": 6 <= height < 10,
-        "show_status_bottom": 2 <= height < 6,
+        "show_status_top": height >= 7,
+        "show_status_bottom": False,
         "show_progress": height >= 8,
         "show_help": height >= 6,
+        "practice_rows": 1,
+    }
+
+    reserved = (
+        int(layout["show_title"])
+        + int(layout["show_lesson"])
+        + int(layout["show_keys"])
+        + int(layout["show_status_top"])
+        + int(layout["show_status_bottom"])
+        + int(layout["show_progress"])
+        + int(layout["show_help"])
+    )
+    layout["practice_rows"] = max(1, height - reserved)
+    return layout
+
+
+def _practice_layout_flags(height):
+    """Backward-compatible flags view of the adaptive practice layout."""
+    layout = _practice_layout(height)
+    return {
+        key: layout[key]
+        for key in (
+            "show_title",
+            "show_lesson",
+            "show_keys",
+            "show_status_top",
+            "show_status_bottom",
+            "show_progress",
+            "show_help",
+        )
     }
 
 
 def practice_visible_lines(height):
     """Return the number of practice-text rows visible for a terminal height."""
-    flags = _practice_layout_flags(height)
-    top_rows = (
-        int(flags["show_title"])
-        + int(flags["show_lesson"])
-        + int(flags["show_keys"])
-        + int(flags["show_status_top"])
-    )
-    bottom_rows = (
-        int(flags["show_status_bottom"])
-        + int(flags["show_progress"])
-        + int(flags["show_help"])
-    )
-    return max(1, height - top_rows - bottom_rows)
+    return _practice_layout(height)["practice_rows"]
 
 
 def draw_hline(win, y, x, width, char="─"):
@@ -1020,6 +1120,7 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
                   start_time, total_correct, total_typed):
     stdscr.erase()
     h, w = stdscr.getmaxyx()
+    layout = _practice_layout(h)
     flags = _practice_layout_flags(h)
 
     elapsed = time.time() - start_time if start_time else 0
@@ -1090,7 +1191,8 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
         bottom_y -= 1
         status_y = bottom_y
 
-    practice_h = max(1, bottom_y - top_y)
+    practice_h = max(1, min(layout["practice_rows"], bottom_y - top_y))
+    bottom_y = top_y + practice_h
     visible_count = min(len(lines), practice_h)
     first_visible_line = _focused_view_start(len(lines), cur_line, visible_count)
     line_x = practice_left_x(w)
