@@ -613,6 +613,134 @@ def test_run_practice_completion_records_session_and_shows_results(monkeypatch):
     assert captured["draw_results"]["lesson_history"][0]["wpm"] == pytest.approx(4.0)
 
 
+@pytest.mark.parametrize("separator_key", [ord(" "), 10, 13])
+def test_run_practice_requires_separator_to_advance_completed_line(monkeypatch, separator_key):
+    screen = FakeScreen(keys=[ord("a"), ord("b"), separator_key, ord("c"), ord("d")])
+    lesson = {"name": "Test", "finger": "All", "keys": "a b c d", "chars": "abcd"}
+    states = []
+    recorded = {}
+
+    monkeypatch.setattr(tt, "generate_practice", lambda *_args, **_kwargs: ["ab", "cd"])
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, typed, cur_line, cur_col,
+                           _start_time, total_correct, total_typed):
+        states.append((cur_line, cur_col, ["".join(row) for row in typed], total_correct, total_typed))
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert [(cur_line, cur_col) for cur_line, cur_col, *_ in states[:5]] == [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (1, 0),
+        (1, 1),
+    ]
+    assert states[2][2] == ["ab", ""]
+    assert states[3][2] == ["ab ", ""]
+    assert states[2][3:] == (2, 2)
+    assert states[3][3:] == (3, 3)
+    assert recorded["stats"]["chars"] == 5
+    assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
+
+
+def test_run_practice_wrong_separator_character_counts_as_error_and_advances(monkeypatch):
+    screen = FakeScreen(keys=[ord("a"), ord("b"), ord("x"), ord("c"), ord("d")])
+    lesson = {"name": "Test", "finger": "All", "keys": "a b c d", "chars": "abcd"}
+    states = []
+    recorded = {}
+
+    monkeypatch.setattr(tt, "generate_practice", lambda *_args, **_kwargs: ["ab", "cd"])
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, typed, cur_line, cur_col,
+                           _start_time, total_correct, total_typed):
+        states.append((cur_line, cur_col, ["".join(row) for row in typed], total_correct, total_typed))
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert [(cur_line, cur_col) for cur_line, cur_col, *_ in states[:5]] == [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (1, 0),
+        (1, 1),
+    ]
+    assert states[3][2] == ["abx", ""]
+    assert states[3][3:] == (2, 3)
+    assert recorded["stats"]["chars"] == 5
+    assert recorded["stats"]["accuracy"] == pytest.approx(80.0)
+
+
+@pytest.mark.parametrize("separator_key", [ord(" "), 10, 13])
+def test_run_practice_backspace_from_next_line_deletes_trailing_separator(monkeypatch, separator_key):
+    screen = FakeScreen(keys=[ord("a"), ord("b"), separator_key, 127, separator_key, ord("c"), ord("d")])
+    lesson = {"name": "Test", "finger": "All", "keys": "a b c d", "chars": "abcd"}
+    states = []
+    recorded = {}
+
+    monkeypatch.setattr(tt, "generate_practice", lambda *_args, **_kwargs: ["ab", "cd"])
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, typed, cur_line, cur_col,
+                           _start_time, total_correct, total_typed):
+        states.append((cur_line, cur_col, ["".join(row) for row in typed], total_correct, total_typed))
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert [(cur_line, cur_col) for cur_line, cur_col, *_ in states[:7]] == [
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (1, 0),
+        (0, 2),
+        (1, 0),
+        (1, 1),
+    ]
+    assert states[3][2] == ["ab ", ""]
+    assert states[3][3:] == (3, 3)
+    assert states[4][2] == ["ab", ""]
+    assert states[4][3:] == (2, 2)
+    assert states[5][2] == ["ab ", ""]
+    assert states[5][3:] == (3, 3)
+    assert recorded["stats"]["chars"] == 5
+    assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
+
+
+
 def test_run_practice_backspace_reduces_totals_before_completion(monkeypatch):
     screen = FakeScreen(keys=[ord("a"), 127, ord("a"), ord("b")])
     lesson = {"name": "Test", "finger": "All", "keys": "a b", "chars": "ab"}

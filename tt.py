@@ -878,7 +878,12 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
             else:
                 safe_addstr(stdscr, y, x, ch, curses.color_pair(C_DIM))
 
-    # Progress bar (only when it does not displace the practice line area)
+        if li == cur_line and cur_col == len(line):
+            cursor_x = line_x + len(line)
+            if cursor_x < w - 1:
+                safe_addstr(stdscr, y, cursor_x, " ", curses.color_pair(C_CURSOR))
+
+    # Progress bar
     total_chars = sum(len(l) for l in lines)
     typed_chars = sum(len(t) for t in typed)
     pct = typed_chars / total_chars if total_chars else 0
@@ -893,7 +898,7 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
 
     if show_footer:
         safe_addstr(stdscr, h - 1, 2,
-                    fit_text("ESC: Menu  TAB: Restart", max(1, w - 4)),
+                    fit_text("ESC: Menu  TAB: Restart  Space/Enter: Next line", max(1, w - 4)),
                     curses.color_pair(C_DIM))
 
     stdscr.refresh()
@@ -1052,6 +1057,8 @@ def run_practice(stdscr, lesson):
     if h < 12:
         num_lines = 1
     lines = generate_practice(lesson, width=line_width, num_lines=num_lines)
+    lines = [line + (" " if i < len(lines) - 1 else "")
+             for i, line in enumerate(lines)]
 
     typed = [[] for _ in lines]
     cur_line = 0
@@ -1061,6 +1068,16 @@ def run_practice(stdscr, lesson):
     total_typed = 0
 
     curses.curs_set(0)  # hide hardware cursor
+
+    def finish_session():
+        elapsed = time.time() - start_time if start_time else 1
+        session_stats = calculate_session_stats(total_correct,
+                                                total_typed,
+                                                elapsed)
+        lesson_history = record_lesson_session(lesson["name"],
+                                               session_stats)
+        return draw_results(stdscr, lesson["name"], session_stats,
+                            lesson_history)
 
     while True:
         draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
@@ -1076,7 +1093,10 @@ def run_practice(stdscr, lesson):
         if key == 9:   # TAB → restart
             return "retry"
 
-        # ── Backspace (works across lines) ──
+        if cur_line >= len(lines):
+            continue
+
+        # ── Backspace (works across lines, including the trailing space) ──
         if key in (curses.KEY_BACKSPACE, 127, 8):
             if cur_col > 0:
                 cur_col -= 1
@@ -1093,40 +1113,34 @@ def run_practice(stdscr, lesson):
                     total_correct -= 1
             continue
 
-        # ── Printable characters ──
-        if 32 <= key <= 126:
+        if cur_col >= len(lines[cur_line]):
+            continue
+
+        ch = None
+        if key in (curses.KEY_ENTER, 10, 13):
+            if lines[cur_line][cur_col] == " ":
+                ch = " "
+        elif 32 <= key <= 126:
             ch = chr(key)
-            if start_time is None:
-                start_time = time.time()
 
+        if ch is None:
+            continue
+
+        if start_time is None:
+            start_time = time.time()
+
+        expected = lines[cur_line][cur_col]
+        typed[cur_line].append(ch)
+        total_typed += 1
+        if ch == expected:
+            total_correct += 1
+
+        cur_col += 1
+        if cur_col >= len(lines[cur_line]):
+            cur_line += 1
+            cur_col = 0
             if cur_line >= len(lines):
-                continue
-            if cur_col >= len(lines[cur_line]):
-                continue
-
-            expected = lines[cur_line][cur_col]
-            typed[cur_line].append(ch)
-            total_typed += 1
-            if ch == expected:
-                total_correct += 1
-
-            cur_col += 1
-
-            # End of line → next line
-            if cur_col >= len(lines[cur_line]):
-                cur_line += 1
-                cur_col = 0
-
-                # All lines done
-                if cur_line >= len(lines):
-                    elapsed = time.time() - start_time if start_time else 1
-                    session_stats = calculate_session_stats(total_correct,
-                                                            total_typed,
-                                                            elapsed)
-                    lesson_history = record_lesson_session(lesson["name"],
-                                                           session_stats)
-                    return draw_results(stdscr, lesson["name"], session_stats,
-                                        lesson_history)
+                return finish_session()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
