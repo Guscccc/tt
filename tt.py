@@ -230,6 +230,10 @@ LESSONS = [
         "keys": "Home row + top row",
         "chars": "asdfghjkl;:'qwertyuiop[]{}\\|",
         "alternating_groups": ["asdfghjkl;:'", "qwertyuiop[]{}\\|"],
+        "hand_alternating_groups": {
+            "left": ["asdfg", "qwert"],
+            "right": ["hjkl;:'", "yuiop[]{}\\|"],
+        },
     },
     {
         "name": "Home ↔ Bottom Row",
@@ -237,6 +241,10 @@ LESSONS = [
         "keys": "Home row + bottom row",
         "chars": "asdfghjkl;:'zxcvbnm,./<>?",
         "alternating_groups": ["asdfghjkl;:'", "zxcvbnm,./<>?"],
+        "hand_alternating_groups": {
+            "left": ["asdfg", "zxcvb"],
+            "right": ["hjkl;:'", "nm,./<>?"],
+        },
     },
     {
         "name": "Home ↔ Number Row",
@@ -244,6 +252,43 @@ LESSONS = [
         "keys": "Home row + number row",
         "chars": "asdfghjkl;:'`1234567890-=",
         "alternating_groups": ["asdfghjkl;:'", "`1234567890-="],
+        "hand_alternating_groups": {
+            "left": ["asdfg", "`12345"],
+            "right": ["hjkl;:'", "67890-="],
+        },
+    },
+    {
+        "name": "Top ↔ Bottom Row",
+        "finger": "All fingers — row jumps",
+        "keys": "Top row + bottom row",
+        "chars": "qwertyuiop[]{}\\|zxcvbnm,./<>?",
+        "alternating_groups": ["qwertyuiop[]{}\\|", "zxcvbnm,./<>?"],
+        "hand_alternating_groups": {
+            "left": ["qwert", "zxcvb"],
+            "right": ["yuiop[]{}\\|", "nm,./<>?"],
+        },
+    },
+    {
+        "name": "Top ↔ Number Row",
+        "finger": "All fingers — row jumps",
+        "keys": "Top row + number row",
+        "chars": "qwertyuiop[]{}\\|`1234567890-=",
+        "alternating_groups": ["qwertyuiop[]{}\\|", "`1234567890-="],
+        "hand_alternating_groups": {
+            "left": ["qwert", "`12345"],
+            "right": ["yuiop[]{}\\|", "67890-="],
+        },
+    },
+    {
+        "name": "Bottom ↔ Number Row",
+        "finger": "All fingers — row jumps",
+        "keys": "Bottom row + number row",
+        "chars": "zxcvbnm,./<>?`1234567890-=",
+        "alternating_groups": ["zxcvbnm,./<>?", "`1234567890-="],
+        "hand_alternating_groups": {
+            "left": ["zxcvb", "`12345"],
+            "right": ["nm,./<>?", "67890-="],
+        },
     },
     # ── Mixed Practice ────────────────────────────────────────────────────
     {
@@ -515,7 +560,30 @@ def generate_practice(lesson, width=55, num_lines=4):
     fragments = []
 
     # ── Alternating row-jump mode ──
-    if lesson.get("alternating_groups"):
+    if lesson.get("hand_alternating_groups"):
+        hand_groups = {}
+        for hand, groups in lesson["hand_alternating_groups"].items():
+            normalized_groups = [list(group) for group in groups if group]
+            if len(normalized_groups) >= 2:
+                hand_groups[hand] = normalized_groups[:2]
+
+        hands = [hand for hand, groups in hand_groups.items() if groups[0] and groups[1]]
+        if hands:
+            for _ in range(32):
+                n = random.randint(2, 6)
+                next_group_idx = {
+                    hand: random.randrange(2)
+                    for hand in hands
+                }
+                frag_chars = []
+                for _ in range(n):
+                    hand = random.choice(hands)
+                    group_idx = next_group_idx[hand]
+                    frag_chars.append(random.choice(hand_groups[hand][group_idx]))
+                    next_group_idx[hand] = 1 - group_idx
+                fragments.append("".join(frag_chars))
+
+    elif lesson.get("alternating_groups"):
         groups = [list(group) for group in lesson["alternating_groups"] if group]
         if len(groups) >= 2:
             for _ in range(32):
@@ -683,8 +751,8 @@ MENU_SECTIONS = [
     ("LEFT HAND", [1, 2, 3, 4]),
     ("RIGHT HAND", [5, 6, 7, 8]),
     ("ROWS", [9, 10, 11, 12, 13]),
-    ("ROW JUMPS", [14, 15, 16]),
-    ("PRACTICE", [17, 18]),
+    ("ROW JUMPS", [14, 15, 16, 17, 18, 19]),
+    ("PRACTICE", [20, 21]),
 ]
 
 

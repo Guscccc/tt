@@ -263,11 +263,13 @@ def test_generate_practice_words_only_lesson_respects_width():
     assert all(len(line) <= 10 for line in lines)
 
 
-def test_generate_practice_row_jump_lesson_alternates_between_groups():
+def test_generate_practice_row_jump_lesson_alternates_rows_per_hand():
     tt.random.seed(2)
     lesson = next(lesson for lesson in tt.LESSONS if lesson["name"] == "Home ↔ Number Row")
-    group_a = set(lesson["alternating_groups"][0])
-    group_b = set(lesson["alternating_groups"][1])
+    hand_groups = {
+        hand: [set(group) for group in groups]
+        for hand, groups in lesson["hand_alternating_groups"].items()
+    }
 
     lines = tt.generate_practice(lesson, width=24, num_lines=3)
 
@@ -277,9 +279,40 @@ def test_generate_practice_row_jump_lesson_alternates_between_groups():
     for line in lines:
         for fragment in line.split():
             assert len(fragment) >= 2
-            for left, right in zip(fragment, fragment[1:]):
-                assert ((left in group_a and right in group_b)
-                        or (left in group_b and right in group_a))
+            last_group_by_hand = {}
+            for ch in fragment:
+                matched = [
+                    (hand, group_idx)
+                    for hand, groups in hand_groups.items()
+                    for group_idx, group in enumerate(groups)
+                    if ch in group
+                ]
+                assert len(matched) == 1
+                hand, group_idx = matched[0]
+                if hand in last_group_by_hand:
+                    assert group_idx != last_group_by_hand[hand]
+                last_group_by_hand[hand] = group_idx
+
+
+def test_all_row_jump_lessons_use_strict_hand_alternation_groups():
+    row_jump_lessons = [lesson for lesson in tt.LESSONS if lesson.get("alternating_groups")]
+
+    assert [lesson["name"] for lesson in row_jump_lessons] == [
+        "Home ↔ Top Row",
+        "Home ↔ Bottom Row",
+        "Home ↔ Number Row",
+        "Top ↔ Bottom Row",
+        "Top ↔ Number Row",
+        "Bottom ↔ Number Row",
+    ]
+    assert all(len(lesson["alternating_groups"]) == 2 for lesson in row_jump_lessons)
+    assert all(lesson["chars"] == "".join(lesson["alternating_groups"])
+               for lesson in row_jump_lessons)
+    assert all(sorted(lesson["hand_alternating_groups"]) == ["left", "right"]
+               for lesson in row_jump_lessons)
+    assert all(len(groups) == 2
+               for lesson in row_jump_lessons
+               for groups in lesson["hand_alternating_groups"].values())
 
 
 def test_fit_text_and_practice_left_x_helpers():
@@ -297,11 +330,22 @@ def test_menu_row_helpers_build_expected_structure():
     heading_count = sum(1 for kind, _ in rows if kind == "heading")
     lesson_count = sum(1 for kind, _ in rows if kind == "lesson")
     blank_count = sum(1 for kind, _ in rows if kind == "blank")
+    row_jump_names = {
+        tt.LESSONS[data]["name"]
+        for kind, data in rows
+        if kind == "lesson" and tt.LESSONS[data].get("alternating_groups")
+    }
 
     assert rows[0] == ("heading", "HOME ROW")
     assert ("heading", "ROW JUMPS") in rows
-    assert any(kind == "lesson" and tt.LESSONS[data]["name"] == "Home ↔ Number Row"
-               for kind, data in rows if kind == "lesson")
+    assert row_jump_names == {
+        "Home ↔ Top Row",
+        "Home ↔ Bottom Row",
+        "Home ↔ Number Row",
+        "Top ↔ Bottom Row",
+        "Top ↔ Number Row",
+        "Bottom ↔ Number Row",
+    }
     assert heading_count == len(tt.MENU_SECTIONS)
     assert lesson_count == len(tt.LESSONS)
     assert blank_count == len(tt.MENU_SECTIONS)
