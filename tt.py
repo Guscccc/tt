@@ -224,6 +224,27 @@ LESSONS = [
         "keys": "All symbol & punctuation keys",
         "chars": "~!@#$%^&*()_+{}|:\"<>?`-=[]\\;',./",
     },
+    {
+        "name": "Home ↔ Top Row",
+        "finger": "All fingers — row jumps",
+        "keys": "Home row + top row",
+        "chars": "asdfghjkl;:'qwertyuiop[]{}\\|",
+        "alternating_groups": ["asdfghjkl;:'", "qwertyuiop[]{}\\|"],
+    },
+    {
+        "name": "Home ↔ Bottom Row",
+        "finger": "All fingers — row jumps",
+        "keys": "Home row + bottom row",
+        "chars": "asdfghjkl;:'zxcvbnm,./<>?",
+        "alternating_groups": ["asdfghjkl;:'", "zxcvbnm,./<>?"],
+    },
+    {
+        "name": "Home ↔ Number Row",
+        "finger": "All fingers — row jumps",
+        "keys": "Home row + number row",
+        "chars": "asdfghjkl;:'`1234567890-=",
+        "alternating_groups": ["asdfghjkl;:'", "`1234567890-="],
+    },
     # ── Mixed Practice ────────────────────────────────────────────────────
     {
         "name": "Common Words",
@@ -247,6 +268,25 @@ PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 SPARKLINE_BLOCKS = "▁▂▃▄▅▆▇█"
 PROGRESS_PLOT_LABEL_W = 5
 PROGRESS_PLOT_DATA_COL = PROGRESS_PLOT_LABEL_W + 1
+DEFAULT_LAST_SELECTED = 0
+
+
+def _normalize_lesson_index(selected, total=None):
+    """Clamp a lesson index into the valid LESSONS range."""
+    if total is None:
+        total = len(LESSONS)
+    try:
+        total = int(total)
+    except (TypeError, ValueError):
+        total = len(LESSONS)
+    if total <= 0:
+        return 0
+
+    try:
+        selected = int(selected)
+    except (TypeError, ValueError):
+        return 0
+    return min(max(0, selected), total - 1)
 
 
 def calculate_session_stats(total_correct, total_typed, elapsed):
@@ -266,33 +306,70 @@ def calculate_session_stats(total_correct, total_typed, elapsed):
 
 def load_progress_history():
     """Load persistent lesson performance history from disk."""
+    default_history = {"lessons": {}, "last_selected": DEFAULT_LAST_SELECTED}
     if not os.path.exists(PROGRESS_FILE):
-        return {"lessons": {}}
+        return dict(default_history)
 
     try:
         with open(PROGRESS_FILE, "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError, json.JSONDecodeError):
-        return {"lessons": {}}
+        return dict(default_history)
 
-    lessons = data.get("lessons", {}) if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return dict(default_history)
+
+    lessons = data.get("lessons", {})
     if not isinstance(lessons, dict):
-        return {"lessons": {}}
+        lessons = {}
 
     normalized = {}
     for lesson_name, sessions in lessons.items():
         if isinstance(lesson_name, str) and isinstance(sessions, list):
             normalized[lesson_name] = [entry for entry in sessions if isinstance(entry, dict)]
-    return {"lessons": normalized}
+
+    return {
+        "lessons": normalized,
+        "last_selected": _normalize_lesson_index(
+            data.get("last_selected", DEFAULT_LAST_SELECTED)
+        ),
+    }
 
 
 def save_progress_history(history):
     """Persist lesson performance history to disk."""
+    if not isinstance(history, dict):
+        history = {}
+
+    lessons = history.get("lessons", {})
+    if not isinstance(lessons, dict):
+        lessons = {}
+
+    payload = {
+        "lessons": lessons,
+        "last_selected": _normalize_lesson_index(
+            history.get("last_selected", DEFAULT_LAST_SELECTED)
+        ),
+    }
+
     try:
         with open(PROGRESS_FILE, "w", encoding="utf-8") as fh:
-            json.dump(history, fh, indent=2)
+            json.dump(payload, fh, indent=2)
     except OSError:
         pass
+
+
+def load_last_selected():
+    """Return the most recently selected lesson index."""
+    return load_progress_history()["last_selected"]
+
+
+def save_last_selected(selected):
+    """Persist the most recently selected lesson index."""
+    history = load_progress_history()
+    history["last_selected"] = _normalize_lesson_index(selected)
+    save_progress_history(history)
+    return history["last_selected"]
 
 
 def record_lesson_session(lesson_name, session_stats):
@@ -437,8 +514,21 @@ def generate_practice(lesson, width=55, num_lines=4):
 
     fragments = []
 
+    # ── Alternating row-jump mode ──
+    if lesson.get("alternating_groups"):
+        groups = [list(group) for group in lesson["alternating_groups"] if group]
+        if len(groups) >= 2:
+            for _ in range(32):
+                n = random.randint(2, 6)
+                start_group = random.randrange(len(groups))
+                frag_chars = []
+                for i in range(n):
+                    group = groups[(start_group + i) % len(groups)]
+                    frag_chars.append(random.choice(group))
+                fragments.append("".join(frag_chars))
+
     # ── Words-only mode (Common Words lesson) ──
-    if lesson.get("words_only"):
+    elif lesson.get("words_only"):
         pool = list(WORD_POOL)
         random.shuffle(pool)
         fragments = pool[:60]
@@ -593,7 +683,8 @@ MENU_SECTIONS = [
     ("LEFT HAND", [1, 2, 3, 4]),
     ("RIGHT HAND", [5, 6, 7, 8]),
     ("ROWS", [9, 10, 11, 12, 13]),
-    ("PRACTICE", [14, 15]),
+    ("ROW JUMPS", [14, 15, 16]),
+    ("PRACTICE", [17, 18]),
 ]
 
 
@@ -749,9 +840,9 @@ def _find_best_match(query, total):
     return best_idx
 
 
-def run_menu(stdscr):
-    selected = 0
+def run_menu(stdscr, initial_selected=0):
     total = len(LESSONS)
+    selected = _normalize_lesson_index(initial_selected, total)
     input_buf = ""
 
     while True:
@@ -1153,12 +1244,16 @@ def main(stdscr):
     stdscr.keypad(True)
     stdscr.timeout(-1)  # blocking reads
 
+    selected = load_last_selected()
+
     while True:
-        choice = run_menu(stdscr)
+        choice = run_menu(stdscr, selected)
         if choice is None:
             break
 
-        lesson = LESSONS[choice]
+        selected = _normalize_lesson_index(choice, len(LESSONS))
+        save_last_selected(selected)
+        lesson = LESSONS[selected]
         while True:
             result = run_practice(stdscr, lesson)
             if result == "retry":

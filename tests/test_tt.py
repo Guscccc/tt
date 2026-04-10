@@ -133,7 +133,8 @@ def test_save_and_load_progress_history_round_trip(tmp_path, monkeypatch):
                     "elapsed": 18.0,
                 }
             ]
-        }
+        },
+        "last_selected": 11,
     }
 
     tt.save_progress_history(history)
@@ -146,10 +147,18 @@ def test_load_progress_history_handles_missing_and_malformed_files(tmp_path, mon
     progress_file = tmp_path / "missing.json"
     monkeypatch.setattr(tt, "PROGRESS_FILE", str(progress_file))
 
-    assert tt.load_progress_history() == {"lessons": {}}
+    assert tt.load_progress_history() == {"lessons": {}, "last_selected": 0}
 
     progress_file.write_text("{not valid json", encoding="utf-8")
-    assert tt.load_progress_history() == {"lessons": {}}
+    assert tt.load_progress_history() == {"lessons": {}, "last_selected": 0}
+
+
+def test_load_progress_history_normalizes_last_selected(tmp_path, monkeypatch):
+    progress_file = tmp_path / "progress.json"
+    monkeypatch.setattr(tt, "PROGRESS_FILE", str(progress_file))
+    progress_file.write_text(json.dumps({"lessons": {}, "last_selected": 999}), encoding="utf-8")
+
+    assert tt.load_progress_history()["last_selected"] == len(tt.LESSONS) - 1
 
 
 def test_record_lesson_session_appends_and_rounds_values(tmp_path, monkeypatch):
@@ -190,6 +199,17 @@ def test_record_lesson_session_appends_and_rounds_values(tmp_path, monkeypatch):
     assert loaded[1]["wpm"] == 31.99
     assert loaded[1]["accuracy"] == 96.44
     assert loaded[1]["elapsed"] == 15.0
+
+
+def test_save_and_load_last_selected_round_trip(tmp_path, monkeypatch):
+    progress_file = tmp_path / "progress.json"
+    monkeypatch.setattr(tt, "PROGRESS_FILE", str(progress_file))
+
+    saved = tt.save_last_selected(14)
+
+    assert saved == 14
+    assert tt.load_last_selected() == 14
+    assert json.loads(progress_file.read_text(encoding="utf-8"))["last_selected"] == 14
 
 
 def test_compress_series_and_sparkline_edge_cases():
@@ -243,6 +263,25 @@ def test_generate_practice_words_only_lesson_respects_width():
     assert all(len(line) <= 10 for line in lines)
 
 
+def test_generate_practice_row_jump_lesson_alternates_between_groups():
+    tt.random.seed(2)
+    lesson = next(lesson for lesson in tt.LESSONS if lesson["name"] == "Home ↔ Number Row")
+    group_a = set(lesson["alternating_groups"][0])
+    group_b = set(lesson["alternating_groups"][1])
+
+    lines = tt.generate_practice(lesson, width=24, num_lines=3)
+
+    assert len(lines) == 3
+    assert all(len(line) <= 24 for line in lines)
+
+    for line in lines:
+        for fragment in line.split():
+            assert len(fragment) >= 2
+            for left, right in zip(fragment, fragment[1:]):
+                assert ((left in group_a and right in group_b)
+                        or (left in group_b and right in group_a))
+
+
 def test_fit_text_and_practice_left_x_helpers():
     assert tt.fit_text("abcdef", 0) == ""
     assert tt.fit_text("abcdef", 3) == "abc"
@@ -260,6 +299,9 @@ def test_menu_row_helpers_build_expected_structure():
     blank_count = sum(1 for kind, _ in rows if kind == "blank")
 
     assert rows[0] == ("heading", "HOME ROW")
+    assert ("heading", "ROW JUMPS") in rows
+    assert any(kind == "lesson" and tt.LESSONS[data]["name"] == "Home ↔ Number Row"
+               for kind, data in rows if kind == "lesson")
     assert heading_count == len(tt.MENU_SECTIONS)
     assert lesson_count == len(tt.LESSONS)
     assert blank_count == len(tt.MENU_SECTIONS)
@@ -525,6 +567,36 @@ def test_run_menu_search_and_enter_selects_best_match():
 
     assert tt.run_menu(screen) == 10
 
+
+def test_run_menu_uses_initial_selection_when_enter_pressed_immediately():
+    screen = FakeScreen(keys=[10])
+
+    assert tt.run_menu(screen, initial_selected=14) == 14
+
+
+
+def test_main_remembers_last_selected_lesson(monkeypatch):
+    screen = FakeScreen()
+    menu_initial = []
+    saved = []
+    choices = iter([14, None])
+
+    monkeypatch.setattr(tt, "init_colors", lambda: None)
+    monkeypatch.setattr(tt.curses, "curs_set", lambda *_: None)
+    monkeypatch.setattr(tt, "load_last_selected", lambda: 11)
+    monkeypatch.setattr(tt, "save_last_selected", lambda selected: saved.append(selected))
+    monkeypatch.setattr(tt, "run_practice", lambda *_args, **_kwargs: "menu")
+
+    def fake_run_menu(_stdscr, initial_selected=0):
+        menu_initial.append(initial_selected)
+        return next(choices)
+
+    monkeypatch.setattr(tt, "run_menu", fake_run_menu)
+
+    tt.main(screen)
+
+    assert menu_initial == [11, 14]
+    assert saved == [14]
 
 
 def test_draw_menu_one_line_prioritizes_selected_lesson():
