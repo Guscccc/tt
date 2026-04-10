@@ -9,12 +9,13 @@ Usage:  python3 tt.py
 Requires: Python 3.6+  (Windows: pip install windows-curses)
 """
 
+import argparse
 import curses
 import json
 import os
-import time
 import random
 import sys
+import time
 
 # Make ESC key responsive (default 1000ms delay is painful)
 os.environ.setdefault("ESCDELAY", "25")
@@ -345,6 +346,77 @@ def save_last_selected(selected):
     history["last_selected"] = _normalize_lesson_index(selected)
     save_progress_history(history)
     return history["last_selected"]
+
+
+def list_lessons(stream=None):
+    """Print a numbered lesson list."""
+    if stream is None:
+        stream = sys.stdout
+
+    for number, lesson in enumerate(LESSONS, start=1):
+        print(f"{number:>2}. {lesson['name']}", file=stream)
+
+
+def resolve_lesson_selector(selector, default=None):
+    """Resolve a CLI lesson selector into a 0-based lesson index."""
+    if selector is None or str(selector).strip() == "":
+        if default is None:
+            return None
+        return _normalize_lesson_index(default, len(LESSONS))
+
+    selector = str(selector).strip()
+    if selector.isdigit():
+        number = int(selector)
+        if 1 <= number <= len(LESSONS):
+            return number - 1
+        raise ValueError(f"Lesson number must be between 1 and {len(LESSONS)}.")
+
+    selector_lower = selector.lower()
+    for idx, lesson in enumerate(LESSONS):
+        if selector_lower == lesson["name"].lower():
+            return idx
+
+    match = _find_best_match(selector_lower, len(LESSONS))
+    if match >= 0:
+        return match
+
+    raise ValueError(
+        f"No lesson matches '{selector}'. Use --list-lessons to see valid options."
+    )
+
+
+def parse_args(argv=None):
+    """Parse command-line options."""
+    parser = argparse.ArgumentParser(
+        description="Terminal touch typing tutor with quick-launch support."
+    )
+    parser.add_argument(
+        "-l", "--lesson",
+        help="Lesson number, exact name, or search text.",
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Start practice immediately using --lesson or the last selected lesson.",
+    )
+    parser.add_argument(
+        "--list-lessons",
+        action="store_true",
+        help="Print numbered lessons and exit.",
+    )
+    return parser.parse_args(argv)
+
+
+def build_startup_config(args, default_selected=None):
+    """Build initial menu/launch state from parsed CLI args."""
+    if default_selected is None:
+        default_selected = load_last_selected()
+
+    selected = resolve_lesson_selector(args.lesson, default_selected)
+    return {
+        "initial_selected": selected,
+        "start_lesson": selected if args.quick else None,
+    }
 
 
 def record_lesson_session(lesson_name, session_stats):
@@ -1236,13 +1308,36 @@ def run_practice(stdscr, lesson):
 # MAIN
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-def main(stdscr):
+def run_selected_lesson(stdscr, selected):
+    """Run the selected lesson until the user returns to menu or quits."""
+    selected = _normalize_lesson_index(selected, len(LESSONS))
+    lesson = LESSONS[selected]
+
+    while True:
+        result = run_practice(stdscr, lesson)
+        if result == "retry":
+            continue
+        return result
+
+
+def main(stdscr, startup=None):
     init_colors()
     curses.curs_set(0)
     stdscr.keypad(True)
     stdscr.timeout(-1)  # blocking reads
 
-    selected = load_last_selected()
+    startup = startup or {}
+    selected = _normalize_lesson_index(
+        startup.get("initial_selected", load_last_selected()),
+        len(LESSONS),
+    )
+
+    start_lesson = startup.get("start_lesson")
+    if start_lesson is not None:
+        selected = _normalize_lesson_index(start_lesson, len(LESSONS))
+        save_last_selected(selected)
+        if run_selected_lesson(stdscr, selected) == "quit":
+            return
 
     while True:
         choice = run_menu(stdscr, selected)
@@ -1251,20 +1346,32 @@ def main(stdscr):
 
         selected = _normalize_lesson_index(choice, len(LESSONS))
         save_last_selected(selected)
-        lesson = LESSONS[selected]
-        while True:
-            result = run_practice(stdscr, lesson)
-            if result == "retry":
-                continue
-            elif result == "menu":
-                break
-            elif result == "quit":
-                return
+        if run_selected_lesson(stdscr, selected) == "quit":
+            return
+
+
+def run(argv=None):
+    """CLI entrypoint used by __main__ and tests."""
+    args = parse_args(argv)
+
+    if args.list_lessons:
+        list_lessons()
+        return 0
+
+    try:
+        startup = build_startup_config(args)
+    except ValueError as exc:
+        print(f"tt: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        curses.wrapper(lambda stdscr: main(stdscr, startup))
+    except KeyboardInterrupt:
+        pass
+
+    print("Happy typing!")
+    return 0
 
 
 if __name__ == "__main__":
-    try:
-        curses.wrapper(main)
-    except KeyboardInterrupt:
-        pass
-    print("Happy typing!")
+    raise SystemExit(run())

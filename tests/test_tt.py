@@ -655,6 +655,48 @@ def test_main_remembers_last_selected_lesson(monkeypatch):
     assert saved == [14]
 
 
+def test_build_startup_config_quick_uses_last_selected():
+    args = tt.parse_args(["--quick"])
+
+    config = tt.build_startup_config(args, default_selected=10)
+
+    assert config == {"initial_selected": 10, "start_lesson": 10}
+
+
+def test_main_quick_start_runs_selected_lesson_before_menu(monkeypatch):
+    screen = FakeScreen()
+    saved = []
+    started = []
+
+    monkeypatch.setattr(tt, "init_colors", lambda: None)
+    monkeypatch.setattr(tt.curses, "curs_set", lambda *_: None)
+    monkeypatch.setattr(tt, "save_last_selected", lambda selected: saved.append(selected))
+    monkeypatch.setattr(tt, "load_last_selected", lambda: 2)
+    monkeypatch.setattr(tt, "run_selected_lesson", lambda _stdscr, selected: started.append(selected) or "quit")
+    monkeypatch.setattr(
+        tt,
+        "run_menu",
+        lambda *_args, **_kwargs: pytest.fail("run_menu should not be reached after quick-start quit"),
+    )
+
+    tt.main(screen, {"initial_selected": 2, "start_lesson": 5})
+
+    assert started == [5]
+    assert saved == [5]
+
+
+def test_run_list_lessons_prints_and_returns_zero(monkeypatch, capsys):
+    captured = []
+
+    monkeypatch.setattr(tt, "list_lessons", lambda stream=None: captured.append(stream))
+
+    result = tt.run(["--list-lessons"])
+
+    assert result == 0
+    assert captured == [None]
+    assert capsys.readouterr() == ("", "")
+
+
 def test_draw_menu_one_line_prioritizes_selected_lesson():
     screen = FakeScreen(height=1, width=40)
 
