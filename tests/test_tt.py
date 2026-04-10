@@ -230,6 +230,18 @@ def test_build_wpm_plot_lines_returns_readable_multiline_chart():
     assert all(len(line) <= 32 for line in lines)
 
 
+def test_load_word_pool_reads_external_file_and_caches(tmp_path, monkeypatch):
+    word_pool_file = tmp_path / "word_pool.txt"
+    word_pool_file.write_text("Alpha\nbeta\n\n# comment\nALPHA\ngamma\n", encoding="utf-8")
+    monkeypatch.setattr(tt, "WORD_POOL_FILE", str(word_pool_file))
+    monkeypatch.setattr(tt, "_WORD_POOL_CACHE", None)
+
+    assert tt.load_word_pool() == ("alpha", "beta", "gamma")
+
+    word_pool_file.write_text("delta\n", encoding="utf-8")
+    assert tt.load_word_pool() == ("alpha", "beta", "gamma")
+
+
 def test_words_for_charset_only_returns_allowed_words():
     chars = "abdeilmnorstuwy"
     words = tt.words_for_charset(chars)
