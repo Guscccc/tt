@@ -242,6 +242,49 @@ def test_load_word_pool_reads_external_file_and_caches(tmp_path, monkeypatch):
     assert tt.load_word_pool() == ("alpha", "beta", "gamma")
 
 
+
+def test_load_wubi_single_char_codes_reads_shortest_codes_and_caches(tmp_path, monkeypatch):
+    wubi_file = tmp_path / "wubi86.yaml"
+    wubi_file.write_text(
+        "# comment\n我 q\n我 trnt\n去 fcu\n云 fcu\n好 vb\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(tt, "WUBI86_FILE", str(wubi_file))
+    monkeypatch.setattr(tt, "_WUBI_CODE_INDEX_CACHE", None)
+    monkeypatch.setattr(tt, "_WUBI_SINGLE_CACHE", None)
+
+    assert tt.load_wubi_single_char_codes() == {"我": "q", "去": "fcu", "云": "fcu", "好": "vb"}
+
+    wubi_file.write_text("新 xx\n", encoding="utf-8")
+    assert tt.load_wubi_single_char_codes() == {"我": "q", "去": "fcu", "云": "fcu", "好": "vb"}
+
+
+
+def test_load_wubi_code_index_preserves_candidate_order(tmp_path, monkeypatch):
+    wubi_file = tmp_path / "wubi86.yaml"
+    wubi_file.write_text("去 fcu\n云 fcu\n动 fcln\n", encoding="utf-8")
+    monkeypatch.setattr(tt, "WUBI86_FILE", str(wubi_file))
+    monkeypatch.setattr(tt, "_WUBI_CODE_INDEX_CACHE", None)
+
+    assert tt.load_wubi_code_index() == {"fcu": ["去", "云"], "fcln": ["动"]}
+
+
+
+def test_build_chinese_wubi_lessons_creates_500_char_frequency_bands(monkeypatch):
+    monkeypatch.setattr(tt, "load_wubi_single_char_entries", lambda: {
+        str(i): {"char": str(i), "code": f"c{i}", "rank": 1, "selectors": (" ", "1"), "target": f"c{i} "}
+        for i in range(1, 3201)
+    })
+    monkeypatch.setattr(tt, "load_chinese_frequency_chars", lambda: tuple(str(i) for i in range(1, 3201)))
+
+    lessons = tt.build_chinese_wubi_lessons(22)
+
+    assert len(lessons) == 6
+    assert lessons[0]["name"] == "Chinese Wubi 1: 1-500"
+    assert lessons[-1]["name"] == "Chinese Wubi 6: 2501-3000"
+    assert len(lessons[0]["wubi_chars"]) == 500
+    assert len(lessons[-1]["wubi_chars"]) == 500
+
+
 def test_words_for_charset_only_returns_allowed_words():
     chars = "abdeilmnorstuwy"
     words = tt.words_for_charset(chars)
@@ -294,6 +337,32 @@ def test_generate_practice_small_height_lines_are_dense():
     assert len(one_line[0]) >= 11
     assert all(len(line) >= 11 for line in two_lines)
     assert all(len(line) >= 10 for line in three_lines)
+
+
+
+def test_generate_practice_wubi_lesson_uses_single_char_entries_with_shortest_codes(monkeypatch):
+    monkeypatch.setattr(tt, "load_wubi_single_char_entries", lambda: {
+        "我": {"char": "我", "code": "q", "rank": 1, "selectors": (" ", "1"), "target": "q "},
+        "去": {"char": "去", "code": "fcu", "rank": 1, "selectors": (" ", "1"), "target": "fcu "},
+        "云": {"char": "云", "code": "fcu", "rank": 2, "selectors": ("2", ";"), "target": "fcu2"},
+    })
+    tt.random.seed(4)
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "wubi_single_char": True,
+        "wubi_chars": ("我", "去", "云"),
+    }
+
+    lines = tt.generate_practice(lesson, width=8, num_lines=2)
+
+    assert len(lines) == 2
+    assert all(lines)
+    assert all(all(set(entry) == {"char", "code", "rank", "selectors", "target"} for entry in line) for line in lines)
+    assert all(all(entry["target"] in {"q ", "fcu ", "fcu2"} for entry in line) for line in lines)
+    assert all(
+        sum(tt.char_display_width(entry["char"]) for entry in line) + max(0, len(line) - 1) <= 8
+        for line in lines
+    )
 
 
 def test_generate_practice_row_jump_lesson_alternates_rows_per_hand():
@@ -382,6 +451,11 @@ def test_menu_row_helpers_build_expected_structure():
     assert heading_count == len(tt.MENU_SECTIONS)
     assert lesson_count == len(tt.LESSONS)
     assert blank_count == len(tt.MENU_SECTIONS)
+    assert any(kind == "heading" and data == "CHINESE" for kind, data in rows)
+    chinese_lessons = [tt.LESSONS[data]["name"] for kind, data in rows if kind == "lesson" and tt.LESSONS[data].get("wubi_single_char")]
+    assert len(chinese_lessons) == 6
+    assert chinese_lessons[0] == "Chinese Wubi 1: 1-500"
+    assert chinese_lessons[-1] == "Chinese Wubi 6: 2501-3000"
     assert tt._selected_menu_pos(0) == 1
 
 
@@ -828,6 +902,77 @@ def test_run_practice_handles_escape_and_tab(monkeypatch, key, expected):
     assert tt.run_practice(screen, lesson) == expected
 
 
+
+def test_run_practice_wubi_requires_selector_key_to_complete(monkeypatch):
+    screen = FakeScreen(keys=[ord("w"), ord("b"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    captured = {}
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]],
+    )
+    monkeypatch.setattr(tt, "draw_practice", lambda *_args, **_kwargs: None)
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+
+    def fake_record_lesson_session(lesson_name, session_stats):
+        captured["lesson_name"] = lesson_name
+        captured["session_stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert captured["lesson_name"] == "Chinese Wubi 1: 1-500"
+    assert captured["session_stats"]["chars"] == 3
+    assert captured["session_stats"]["accuracy"] == pytest.approx(100.0)
+
+
+
+def test_run_practice_wubi_supports_second_candidate_selector(monkeypatch):
+    screen = FakeScreen(keys=[ord("f"), ord("c"), ord("u"), ord("2")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    captured = {}
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "云", "code": "fcu", "rank": 2, "selectors": ("2", ";"), "target": "fcu2"}]],
+    )
+    monkeypatch.setattr(tt, "draw_practice", lambda *_args, **_kwargs: None)
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+
+    def fake_record_lesson_session(lesson_name, session_stats):
+        captured["session_stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    assert tt.run_practice(screen, lesson) == "menu"
+    assert captured["session_stats"]["chars"] == 4
+    assert captured["session_stats"]["accuracy"] == pytest.approx(100.0)
+
+
 def test_run_practice_completion_records_session_and_shows_results(monkeypatch):
     screen = FakeScreen(keys=[ord("a"), ord("b")])
     lesson = {"name": "Test", "finger": "All", "keys": "a b", "chars": "ab"}
@@ -1021,3 +1166,207 @@ def test_run_practice_backspace_reduces_totals_before_completion(monkeypatch):
     assert result == "menu"
     assert [item[1:] for item in totals[:4]] == [(0, 0), (1, 1), (0, 0), (1, 1)]
     assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
+
+
+
+def test_run_practice_wubi_backspace_deletes_committed_character(monkeypatch):
+    screen = FakeScreen(keys=[ord("w"), ord("b"), ord(" "), 127, ord("w"), ord("b"), ord(" "), ord("w"), ord("b"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    states = []
+    recorded = {}
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[
+            {"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "},
+            {"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "},
+        ]],
+    )
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, typed, cur_line, cur_col,
+                           _start_time, total_correct, total_typed):
+        states.append((cur_line, cur_col, [list(row) for row in typed], total_correct, total_typed))
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert [(cur_line, cur_col) for cur_line, cur_col, *_ in states[:10]] == [
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 1),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 1),
+        (0, 1),
+        (0, 1),
+    ]
+    assert states[3][2] == [["wb ", ""]]
+    assert states[3][3:] == (3, 3)
+    assert states[4][2] == [["", ""]]
+    assert states[4][3:] == (0, 0)
+    assert recorded["stats"]["chars"] == 6
+    assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
+
+
+
+def test_run_practice_wubi_backspace_within_composition_removes_one_key(monkeypatch):
+    screen = FakeScreen(keys=[ord("w"), ord("b"), 127, ord("b"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    states = []
+    recorded = {}
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]],
+    )
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, typed, cur_line, cur_col,
+                           _start_time, total_correct, total_typed):
+        states.append((cur_line, cur_col, [list(row) for row in typed], total_correct, total_typed))
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert states[1][2] == [["w"]]
+    assert states[1][3:] == (1, 1)
+    assert states[2][2] == [["wb"]]
+    assert states[2][3:] == (2, 2)
+    assert states[3][2] == [["w"]]
+    assert states[3][3:] == (1, 1)
+    assert recorded["stats"]["chars"] == 3
+    assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
+
+
+
+@pytest.mark.parametrize("selector_key", [ord(" "), ord("1"), ord("2"), ord("4"), ord(";"), ord("'")])
+def test_run_practice_wubi_selector_commits_even_when_wrong(monkeypatch, selector_key):
+    screen = FakeScreen(keys=[ord("w"), selector_key])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    states = []
+    recorded = {}
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]],
+    )
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, typed, cur_line, cur_col,
+                           _start_time, total_correct, total_typed):
+        states.append((cur_line, cur_col, [list(row) for row in typed], total_correct, total_typed))
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert [(cur_line, cur_col) for cur_line, cur_col, *_ in states] == [
+        (0, 0),
+        (0, 0),
+    ]
+    assert states[-1][2] == [["w"]]
+    assert states[-1][3:] == (1, 1)
+    assert recorded["stats"]["chars"] == 2
+    assert recorded["stats"]["accuracy"] == pytest.approx(50.0)
+
+
+
+def test_run_practice_wubi_selector_commits_after_extra_keys(monkeypatch):
+    screen = FakeScreen(keys=[ord("w"), ord("b"), ord("x"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    states = []
+    recorded = {}
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]],
+    )
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, typed, cur_line, cur_col,
+                           _start_time, total_correct, total_typed):
+        states.append((cur_line, cur_col, [list(row) for row in typed], total_correct, total_typed))
+
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    result = tt.run_practice(screen, lesson)
+
+    assert result == "menu"
+    assert [(cur_line, cur_col) for cur_line, cur_col, *_ in states] == [
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+    ]
+    assert states[-1][2] == [["wbx"]]
+    assert states[-1][3:] == (2, 3)
+    assert recorded["stats"]["chars"] == 4
+    assert recorded["stats"]["accuracy"] == pytest.approx(50.0)

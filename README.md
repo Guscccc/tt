@@ -1,10 +1,13 @@
 # Terminal Typing Tutor
 
-Minimal terminal touch-typing practice in Python with finger-specific lessons, row drills, common words, and full-keyboard practice.
+Minimal terminal touch-typing practice in Python with finger-specific lessons, row drills, common words, full-keyboard practice, and Chinese single-character Wubi drills.
 
 ## Features
 
 - Home row, left/right hand, top/bottom row, number row, symbol, word, and full-keyboard lessons
+- Six Chinese Wubi lessons covering the most frequent 3000 characters in 500-character bands from `chinese_character_frequency.csv`
+- Wubi single-character drills driven by `wubi86.yaml` with real candidate ordering per code
+- Uses exact code plus selector key, so `我` is `q` then `Space` or `1`, `他` is `wb` then `Space` or `1`, and second-choice `云` for `fcu` is `fcu2` or `fcu;`
 - Covers all letters, uppercase letters, digits, and every supported symbol/punctuation key
 - Searchable lesson menu
 - Live WPM, accuracy, errors, and progress bar
@@ -82,6 +85,7 @@ This keeps terminal presentation in the Windows shortcut while [`windows/tt-hotk
 
 - Menu: `↑/↓` or `j/k`, `Enter` to start, type to search, `Esc` to clear/back, `q` to quit
 - Practice: type the text, `Backspace` to correct, `Tab` to restart, `Esc` for menu
+- Chinese Wubi: type the exact single-character code, then finish with a selector key; first candidate accepts `Space` or `1`, second accepts `2` or `;`, third accepts `3` or `'`, and fourth through ninth use `4` to `9`
 - Results: `r` retry, `m` or `Esc` menu, `q` quit
 
 ## Progress

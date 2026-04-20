@@ -10,6 +10,7 @@ Requires: Python 3.6+  (Windows: pip install windows-curses)
 """
 
 import argparse
+import csv
 import curses
 import json
 import os
@@ -17,6 +18,7 @@ import random
 import sys
 import textwrap
 import time
+import unicodedata
 
 # Make ESC key responsive (default 1000ms delay is painful)
 os.environ.setdefault("ESCDELAY", "25")
@@ -37,7 +39,14 @@ C_HEADING = 7
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 WORD_POOL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               "word_pool.txt")
+WUBI86_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "wubi86.yaml")
+CHINESE_FREQUENCY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "chinese_character_frequency.csv")
 _WORD_POOL_CACHE = None
+_WUBI_SINGLE_CACHE = None
+_WUBI_CODE_INDEX_CACHE = None
+_CHINESE_FREQUENCY_CACHE = None
 
 
 def load_word_pool():
@@ -62,6 +71,170 @@ def load_word_pool():
 
     _WORD_POOL_CACHE = tuple(words)
     return _WORD_POOL_CACHE
+
+
+
+def char_display_width(ch):
+    """Return the terminal cell width used by a single character."""
+    if not ch:
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+
+def text_display_width(text):
+    """Return the terminal cell width used by *text*."""
+    return sum(char_display_width(ch) for ch in text)
+
+
+
+def load_wubi_code_index():
+    """Load exact Wubi code -> ordered character candidates."""
+    global _WUBI_CODE_INDEX_CACHE
+    if _WUBI_CODE_INDEX_CACHE is not None:
+        return _WUBI_CODE_INDEX_CACHE
+
+    index = {}
+    try:
+        with open(WUBI86_FILE, "r", encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                char, code = parts[0], parts[1].lower()
+                if len(char) != 1 or not code or not code.isascii() or not code.isalpha():
+                    continue
+                candidates = index.setdefault(code, [])
+                if char not in candidates:
+                    candidates.append(char)
+    except OSError:
+        _WUBI_CODE_INDEX_CACHE = {}
+        return _WUBI_CODE_INDEX_CACHE
+
+    _WUBI_CODE_INDEX_CACHE = index
+    return _WUBI_CODE_INDEX_CACHE
+
+
+
+def wubi_selector_keys(rank):
+    """Return accepted selector keys for a 1-based Wubi candidate rank."""
+    rank = int(rank)
+    if rank <= 0:
+        return ()
+    if rank == 1:
+        return (" ", "1")
+    if rank == 2:
+        return ("2", ";")
+    if rank == 3:
+        return ("3", "'")
+    if 4 <= rank <= 9:
+        return (str(rank),)
+    return ()
+
+
+WUBI_FINALIZER_KEYS = frozenset("123456789;'") | {" "}
+
+
+
+def _wubi_entry_sort_key(entry):
+    """Return the sort key for choosing the minimal practice entry."""
+    return (len(entry["code"]) + 1, len(entry["code"]), entry["rank"], entry["code"])
+
+
+
+def load_wubi_single_char_codes():
+    """Load the preferred minimal Wubi code for each single character."""
+    global _WUBI_SINGLE_CACHE
+    if _WUBI_SINGLE_CACHE is not None:
+        return _WUBI_SINGLE_CACHE
+
+    codes = {}
+    for code, chars in load_wubi_code_index().items():
+        for rank, char in enumerate(chars, start=1):
+            if not wubi_selector_keys(rank):
+                continue
+            current = codes.get(char)
+            candidate = {"code": code, "rank": rank}
+            if current is None or _wubi_entry_sort_key(candidate) < _wubi_entry_sort_key(current):
+                codes[char] = candidate
+
+    _WUBI_SINGLE_CACHE = {char: entry["code"] for char, entry in codes.items()}
+    return _WUBI_SINGLE_CACHE
+
+
+
+def load_wubi_single_char_entries():
+    """Load preferred minimal Wubi practice entries for single characters."""
+    entries = {}
+    for code, chars in load_wubi_code_index().items():
+        for rank, char in enumerate(chars, start=1):
+            selectors = wubi_selector_keys(rank)
+            if not selectors:
+                continue
+            candidate = {
+                "char": char,
+                "code": code,
+                "rank": rank,
+                "selectors": selectors,
+                "target": code + selectors[0],
+            }
+            current = entries.get(char)
+            if current is None or _wubi_entry_sort_key(candidate) < _wubi_entry_sort_key(current):
+                entries[char] = candidate
+    return entries
+
+
+
+def load_chinese_frequency_chars():
+    """Load Chinese characters ordered by descending real-world frequency."""
+    global _CHINESE_FREQUENCY_CACHE
+    if _CHINESE_FREQUENCY_CACHE is not None:
+        return _CHINESE_FREQUENCY_CACHE
+
+    chars = []
+    seen = set()
+    try:
+        with open(CHINESE_FREQUENCY_FILE, "r", encoding="utf-8-sig", newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                char = (row.get("character") or "").strip()
+                if len(char) != 1 or char in seen:
+                    continue
+                chars.append(char)
+                seen.add(char)
+    except OSError:
+        _CHINESE_FREQUENCY_CACHE = ()
+        return _CHINESE_FREQUENCY_CACHE
+
+    _CHINESE_FREQUENCY_CACHE = tuple(chars)
+    return _CHINESE_FREQUENCY_CACHE
+
+
+
+def build_chinese_wubi_lessons(start_index):
+    """Build Chinese Wubi lessons in 500-character frequency bands."""
+    entries = load_wubi_single_char_entries()
+    ranked_chars = [char for char in load_chinese_frequency_chars() if char in entries][:3000]
+    lessons = []
+    for offset in range(0, len(ranked_chars), 500):
+        bucket = ranked_chars[offset:offset + 500]
+        if not bucket:
+            continue
+        first = offset + 1
+        last = offset + len(bucket)
+        lesson_no = len(lessons) + 1
+        lessons.append({
+            "name": f"Chinese Wubi {lesson_no}: {first}-{last}",
+            "finger": f"All fingers - frequent Chinese characters {first}-{last}",
+            "keys": "Type exact Wubi code, then finish with Space/1 or candidate selector",
+            "chars": "abcdefghijklmnopqrstuvwxyz1234567890;\' ",
+            "wubi_single_char": True,
+            "wubi_chars": tuple(bucket),
+        })
+    return lessons
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LESSON DEFINITIONS
@@ -238,6 +411,8 @@ LESSONS = [
                   "1234567890~!@#$%^&*()_+{}|:\"<>?`-=[]\\;',./"),
     },
 ]
+
+LESSONS.extend(build_chinese_wubi_lessons(len(LESSONS)))
 
 
 PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -550,6 +725,40 @@ def words_for_charset(chars):
     return [w for w in load_word_pool() if all(c in allowed for c in w)]
 
 
+def _generate_wubi_practice_lines(lesson, count, width):
+    """Generate Wubi single-character practice lines within *width* cells."""
+    width = max(2, int(width))
+    count = max(1, int(count))
+
+    entry_index = load_wubi_single_char_entries()
+    allowed_chars = lesson.get("wubi_chars") or tuple(entry_index)
+    items = [entry_index[ch] for ch in allowed_chars if ch in entry_index]
+    if not items:
+        return [[{"char": "我", "code": "q", "rank": 1, "selectors": (" ", "1"), "target": "q "}]]
+
+    lines = []
+    for _ in range(count):
+        line = []
+        used = 0
+        target_fill = max(2, width - 2)
+        attempts = 0
+        while used < target_fill and attempts < max(8, width * 4):
+            attempts += 1
+            entry = dict(random.choice(items))
+            entry_w = char_display_width(entry["char"]) + (1 if line else 0)
+            if line and used + entry_w > width:
+                break
+            if not line and char_display_width(entry["char"]) > width:
+                break
+            line.append(entry)
+            used += entry_w
+        if not line:
+            line = [dict(random.choice(items))]
+        lines.append(line)
+    return lines
+
+
+
 def _generate_practice_fragments(lesson, count):
     """Generate *count* lesson-appropriate fragments for practice text."""
     count = max(1, int(count))
@@ -738,8 +947,10 @@ def generate_practice(lesson, width=55, num_lines=4):
     """Build practice lines from a lesson's character set."""
     width = max(1, width)
     num_lines = max(1, num_lines)
-    chars = lesson["chars"]
+    if lesson.get("wubi_single_char"):
+        return _generate_wubi_practice_lines(lesson, num_lines, width)
 
+    chars = lesson["chars"]
     fragment_pool = []
 
     def ensure_fragments(min_count):
@@ -913,6 +1124,7 @@ MENU_SECTIONS = [
     ("ROWS", [9, 10, 11, 12, 13]),
     ("ROW JUMPS", [14, 15, 16, 17, 18, 19]),
     ("PRACTICE", [20, 21]),
+    ("CHINESE", list(range(22, len(LESSONS)))),
 ]
 
 
@@ -1116,6 +1328,18 @@ def run_menu(stdscr, initial_selected=0):
 # TYPING PRACTICE SCREEN
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+def _wubi_progress(lines, typed):
+    """Return completed/total character counts for Wubi practice."""
+    total = sum(len(line) for line in lines)
+    completed = 0
+    for line_entries, line_typed in zip(lines, typed):
+        for entry, typed_code in zip(line_entries, line_typed):
+            if typed_code == entry["target"]:
+                completed += 1
+    return completed, total
+
+
+
 def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
                   start_time, total_correct, total_typed):
     stdscr.erase()
@@ -1135,8 +1359,11 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
 
     acc = (total_correct / total_typed * 100) if total_typed > 0 else 100.0
     errors = total_typed - total_correct
-    total_chars = sum(len(line) for line in lines)
-    typed_chars = sum(len(row) for row in typed)
+    if lesson.get("wubi_single_char"):
+        typed_chars, total_chars = _wubi_progress(lines, typed)
+    else:
+        total_chars = sum(len(line) for line in lines)
+        typed_chars = sum(len(row) for row in typed)
     pct = typed_chars / total_chars if total_chars else 0.0
     progress_pct = int(round(pct * 100))
     line_label = f"{min(cur_line + 1, len(lines))}/{len(lines)}"
@@ -1160,6 +1387,14 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
 
     if flags["show_lesson"]:
         lesson_text = fit_text(f"{lesson['name']}  Line {line_label}", max(1, w - 4))
+        if lesson.get("wubi_single_char") and cur_line < len(lines) and cur_col < len(lines[cur_line]):
+            current_entry = lines[cur_line][cur_col]
+            typed_code = typed[cur_line][cur_col]
+            selector_hint = "/".join(repr(ch)[1:-1] if ch != " " else "Space" for ch in current_entry["selectors"])
+            lesson_text = fit_text(
+                f"{lesson['name']}  Char {current_entry['char']}  Code {typed_code}_/{current_entry['code']}  Select {selector_hint}",
+                max(1, w - 4),
+            )
         safe_addstr(stdscr, top_y, 2, lesson_text, curses.color_pair(C_TITLE))
         top_y += 1
 
@@ -1202,6 +1437,26 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
         y = top_y + screen_idx
         if y >= bottom_y or y >= h:
             break
+
+        if lesson.get("wubi_single_char"):
+            x = line_x
+            for ci, entry in enumerate(lines[li]):
+                ch = entry["char"]
+                if x >= w - 1:
+                    break
+                if li < cur_line or (li == cur_line and ci < cur_col):
+                    attr = curses.color_pair(C_CORRECT if typed[li][ci] == entry["target"] else C_WRONG)
+                elif li == cur_line and ci == cur_col:
+                    attr = curses.color_pair(C_CURSOR)
+                else:
+                    attr = curses.color_pair(C_DIM)
+                safe_addstr(stdscr, y, x, ch, attr)
+                x += char_display_width(ch)
+                if ci < len(lines[li]) - 1 and x < w - 1:
+                    safe_addstr(stdscr, y, x, " ", curses.color_pair(C_DIM))
+                    x += 1
+            continue
+
         line = lines[li]
         for ci, ch in enumerate(line):
             x = line_x + ci
@@ -1253,11 +1508,14 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
             )
 
     if help_y is not None:
+        help_text = "ESC Menu  TAB Restart  Enter/Space Next"
+        if lesson.get("wubi_single_char"):
+            help_text = "ESC Menu  TAB Restart  Backspace Delete  Type code then Space/1/2/3/;/'"
         safe_addstr(
             stdscr,
             help_y,
             2,
-            fit_text("ESC Menu  TAB Restart  Enter/Space Next", max(1, w - 4)),
+            fit_text(help_text, max(1, w - 4)),
             curses.color_pair(C_DIM),
         )
 
@@ -1411,10 +1669,13 @@ def run_practice(stdscr, lesson):
     visible_lines = practice_visible_lines(h)
     num_lines = visible_lines + (1 if visible_lines >= 4 else 0)
     lines = generate_practice(lesson, width=line_width, num_lines=num_lines)
-    lines = [line + (" " if i < len(lines) - 1 else "")
-             for i, line in enumerate(lines)]
+    if lesson.get("wubi_single_char"):
+        typed = [["" for _ in line] for line in lines]
+    else:
+        lines = [line + (" " if i < len(lines) - 1 else "")
+                 for i, line in enumerate(lines)]
+        typed = [[] for _ in lines]
 
-    typed = [[] for _ in lines]
     cur_line = 0
     cur_col = 0
     start_time = None
@@ -1441,16 +1702,80 @@ def run_practice(stdscr, lesson):
         if key == curses.KEY_RESIZE:
             continue
 
-        # ── Special keys ──
-        if key == 27:  # ESC
+        if key == 27:
             return "menu"
-        if key == 9:   # TAB → restart
+        if key == 9:
             return "retry"
 
         if cur_line >= len(lines):
             continue
 
-        # ── Backspace (works across lines, including the trailing space) ──
+        if lesson.get("wubi_single_char"):
+            if key in (curses.KEY_BACKSPACE, 127, 8):
+                if typed[cur_line][cur_col]:
+                    entry = lines[cur_line][cur_col]
+                    removed_idx = len(typed[cur_line][cur_col]) - 1
+                    removed = typed[cur_line][cur_col][-1]
+                    typed[cur_line][cur_col] = typed[cur_line][cur_col][:-1]
+                    total_typed -= 1
+                    if removed_idx < len(entry["target"]) and removed == entry["target"][removed_idx]:
+                        total_correct -= 1
+                else:
+                    prev_line = cur_line
+                    prev_col = cur_col - 1
+                    if prev_col < 0 and cur_line > 0:
+                        prev_line = cur_line - 1
+                        prev_col = len(lines[prev_line]) - 1
+                    if prev_col >= 0:
+                        prev_entry = lines[prev_line][prev_col]
+                        prev_typed = typed[prev_line][prev_col]
+                        committed = prev_typed and prev_typed[-1] in WUBI_FINALIZER_KEYS
+                        if committed:
+                            typed[prev_line][prev_col] = ""
+                            total_typed -= len(prev_typed)
+                            total_correct -= sum(
+                                1
+                                for idx, ch in enumerate(prev_typed)
+                                if idx < len(prev_entry["target"]) and ch == prev_entry["target"][idx]
+                            )
+                        cur_line = prev_line
+                        cur_col = prev_col
+                continue
+
+            if cur_col >= len(lines[cur_line]):
+                continue
+
+            ch = None
+            if key in (curses.KEY_ENTER, 10, 13):
+                ch = " "
+            elif 32 <= key <= 126:
+                ch = chr(key).lower()
+            if ch is None:
+                continue
+
+            entry = lines[cur_line][cur_col]
+            typed_code = typed[cur_line][cur_col]
+            next_idx = len(typed_code)
+
+            if start_time is None:
+                start_time = time.time()
+
+            typed[cur_line][cur_col] = typed_code + ch
+            total_typed += 1
+            if next_idx < len(entry["target"]) and ch == entry["target"][next_idx]:
+                total_correct += 1
+
+            if ch not in WUBI_FINALIZER_KEYS and typed[cur_line][cur_col] != entry["target"]:
+                continue
+
+            cur_col += 1
+            if cur_col >= len(lines[cur_line]):
+                cur_line += 1
+                cur_col = 0
+                if cur_line >= len(lines):
+                    return finish_session()
+            continue
+
         if key in (curses.KEY_BACKSPACE, 127, 8):
             if cur_col > 0:
                 cur_col -= 1
