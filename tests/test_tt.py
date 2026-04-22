@@ -57,9 +57,132 @@ def patch_curses(monkeypatch):
 def addstr_texts(screen):
     return [call[3] for call in screen.calls if call[0] == "addstr"]
 
-
 def _results_texts(lines):
     return [text for text, _ in lines]
+
+
+
+def test_draw_practice_wubi_shows_corresponding_wrong_character_after_completion(monkeypatch):
+    screen = FakeScreen(height=24, width=100)
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    lines = [[{"char": "我", "code": "q", "rank": 1, "selectors": (" ", "1"), "target": "q "}]]
+    typed = [["f "]]
+
+    monkeypatch.setattr(tt, "load_wubi_code_index", lambda: {"f": ["地"], "q": ["我"]})
+    monkeypatch.setattr(tt.time, "time", lambda: 105.0)
+
+    tt.draw_practice(
+        screen,
+        lesson,
+        lines,
+        typed,
+        cur_line=1,
+        cur_col=0,
+        start_time=100.0,
+        total_correct=0,
+        total_typed=2,
+    )
+
+    texts = addstr_texts(screen)
+    char_calls = [call for call in screen.calls if len(call) == 5 and call[0] == "addstr"]
+    assert any("地" == text for text in texts)
+    assert not any(call[3] == "我" and call[4] == tt.C_WRONG for call in char_calls)
+    assert not any("Wrong 地" in text for text in texts)
+
+
+
+def test_draw_practice_wubi_shows_nonminimal_correct_character_in_blue(monkeypatch):
+    screen = FakeScreen(height=24, width=100)
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    lines = [[{"char": "我", "code": "q", "rank": 1, "selectors": (" ", "1"), "target": "q "}]]
+    typed = [["trnt "]]
+
+    monkeypatch.setattr(tt, "load_wubi_code_index", lambda: {"q": ["我"], "trnt": ["我"]})
+    monkeypatch.setattr(tt.time, "time", lambda: 105.0)
+
+    tt.draw_practice(
+        screen,
+        lesson,
+        lines,
+        typed,
+        cur_line=1,
+        cur_col=0,
+        start_time=100.0,
+        total_correct=0,
+        total_typed=5,
+    )
+
+    char_calls = [call for call in screen.calls if call[0] == "addstr" and call[3] == "我"]
+    assert char_calls
+    assert any(call[4] == tt.C_WUBI_NONMINIMAL for call in char_calls)
+
+
+
+def test_draw_practice_wubi_hides_error_feedback_until_commit(monkeypatch):
+    screen = FakeScreen(height=24, width=100)
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    lines = [[{"char": "我", "code": "q", "rank": 1, "selectors": (" ", "1"), "target": "q "}]]
+    typed = [["f"]]
+
+    monkeypatch.setattr(tt, "load_wubi_code_index", lambda: {"f": ["地"], "q": ["我"]})
+    monkeypatch.setattr(tt.time, "time", lambda: 105.0)
+
+    tt.draw_practice(
+        screen,
+        lesson,
+        lines,
+        typed,
+        cur_line=0,
+        cur_col=0,
+        start_time=100.0,
+        total_correct=0,
+        total_typed=1,
+    )
+
+    texts = addstr_texts(screen)
+    assert any("Err: 0" in text for text in texts)
+    assert any("Acc: 100%" in text for text in texts)
+    assert not any("Wrong 地" in text for text in texts)
+
+
+
+def test_init_colors_uses_white_on_blue_for_nonminimal_wubi(monkeypatch):
+    init_calls = []
+
+    monkeypatch.setattr(tt.curses, "start_color", lambda: None)
+    monkeypatch.setattr(tt.curses, "use_default_colors", lambda: None)
+    monkeypatch.setattr(tt.curses, "init_pair", lambda pair, fg, bg: init_calls.append((pair, fg, bg)))
+    monkeypatch.setattr(tt.curses, "COLOR_GREEN", 2, raising=False)
+    monkeypatch.setattr(tt.curses, "COLOR_WHITE", 7, raising=False)
+    monkeypatch.setattr(tt.curses, "COLOR_RED", 1, raising=False)
+    monkeypatch.setattr(tt.curses, "COLOR_CYAN", 6, raising=False)
+    monkeypatch.setattr(tt.curses, "COLOR_YELLOW", 3, raising=False)
+    monkeypatch.setattr(tt.curses, "COLOR_BLACK", 0, raising=False)
+    monkeypatch.setattr(tt.curses, "COLOR_MAGENTA", 5, raising=False)
+    monkeypatch.setattr(tt.curses, "COLOR_BLUE", 4, raising=False)
+
+    tt.init_colors()
+
+    assert (tt.C_WUBI_NONMINIMAL, tt.curses.COLOR_WHITE, tt.curses.COLOR_BLUE) in init_calls
+
 
 
 def _progress_alignment_columns(lines):
@@ -116,6 +239,15 @@ def test_calculate_session_stats_zero_elapsed_and_zero_typed():
     assert stats["errors"] == 0
 
 
+
+def test_calculate_session_stats_supports_character_based_speed():
+    stats = tt.calculate_session_stats(total_correct=8, total_typed=10, elapsed=30, chars_per_word=1.0)
+
+    assert stats["wpm"] == pytest.approx(20.0)
+    assert stats["accuracy"] == pytest.approx(80.0)
+    assert stats["errors"] == 2
+
+
 def test_save_and_load_progress_history_round_trip(tmp_path, monkeypatch):
     progress_file = tmp_path / "progress.json"
     monkeypatch.setattr(tt, "PROGRESS_FILE", str(progress_file))
@@ -135,6 +267,10 @@ def test_save_and_load_progress_history_round_trip(tmp_path, monkeypatch):
             ]
         },
         "last_selected": 11,
+        "error_chars": {
+            tt.ERROR_CATEGORY_ENGLISH: {"a": 3, "b": 1},
+            tt.ERROR_CATEGORY_WUBI: {"我": 2},
+        },
     }
 
     tt.save_progress_history(history)
@@ -147,10 +283,24 @@ def test_load_progress_history_handles_missing_and_malformed_files(tmp_path, mon
     progress_file = tmp_path / "missing.json"
     monkeypatch.setattr(tt, "PROGRESS_FILE", str(progress_file))
 
-    assert tt.load_progress_history() == {"lessons": {}, "last_selected": 0}
+    assert tt.load_progress_history() == {
+        "lessons": {},
+        "last_selected": 0,
+        "error_chars": {
+            tt.ERROR_CATEGORY_ENGLISH: {},
+            tt.ERROR_CATEGORY_WUBI: {},
+        },
+    }
 
     progress_file.write_text("{not valid json", encoding="utf-8")
-    assert tt.load_progress_history() == {"lessons": {}, "last_selected": 0}
+    assert tt.load_progress_history() == {
+        "lessons": {},
+        "last_selected": 0,
+        "error_chars": {
+            tt.ERROR_CATEGORY_ENGLISH: {},
+            tt.ERROR_CATEGORY_WUBI: {},
+        },
+    }
 
 
 def test_load_progress_history_normalizes_last_selected(tmp_path, monkeypatch):
@@ -209,7 +359,62 @@ def test_save_and_load_last_selected_round_trip(tmp_path, monkeypatch):
 
     assert saved == 14
     assert tt.load_last_selected() == 14
-    assert json.loads(progress_file.read_text(encoding="utf-8"))["last_selected"] == 14
+    payload = json.loads(progress_file.read_text(encoding="utf-8"))
+    assert payload["last_selected"] == 14
+    assert payload["error_chars"] == {
+        tt.ERROR_CATEGORY_ENGLISH: {},
+        tt.ERROR_CATEGORY_WUBI: {},
+    }
+
+
+
+def test_build_error_practice_lessons_separates_english_and_wubi():
+    lessons = tt.build_error_practice_lessons(
+        {
+            tt.ERROR_CATEGORY_ENGLISH: {
+                "z": 2,
+                "a": 5,
+                "!": 1,
+                "q": 4,
+                "w": 3,
+                "e": 6,
+                "r": 7,
+            },
+            tt.ERROR_CATEGORY_WUBI: {"我": 4, "你": 1, "他": 6, "们": 3, "的": 2, "了": 5},
+        }
+    )
+
+    assert [lesson["name"] for lesson in lessons] == [
+        "English Error Practice",
+        "Wubi Error Practice",
+    ]
+    assert lessons[0]["chars"] == "reaqw"
+    assert lessons[0]["error_practice"] == tt.ERROR_CATEGORY_ENGLISH
+    assert len(lessons[0]["chars"]) == tt.ERROR_PRACTICE_MAX_CHARS
+    assert lessons[1]["wubi_chars"] == ("他", "了", "我", "们", "的")
+    assert lessons[1]["wubi_single_char"] is True
+    assert lessons[1]["error_practice"] == tt.ERROR_CATEGORY_WUBI
+    assert len(lessons[1]["wubi_chars"]) == tt.ERROR_PRACTICE_MAX_CHARS
+
+
+
+def test_record_error_char_persists_immediately(tmp_path, monkeypatch):
+    progress_file = tmp_path / "progress.json"
+    monkeypatch.setattr(tt, "PROGRESS_FILE", str(progress_file))
+
+    tt.record_error_char(tt.ERROR_CATEGORY_ENGLISH, "a")
+    tt.record_error_char(tt.ERROR_CATEGORY_ENGLISH, "a")
+    tt.record_error_char(tt.ERROR_CATEGORY_WUBI, "我")
+
+    loaded = tt.load_progress_history()
+    assert loaded["error_chars"] == {
+        tt.ERROR_CATEGORY_ENGLISH: {"a": 2},
+        tt.ERROR_CATEGORY_WUBI: {"我": 1},
+    }
+    assert [lesson["name"] for lesson in tt.build_error_practice_lessons(loaded["error_chars"])] == [
+        "English Error Practice",
+        "Wubi Error Practice",
+    ]
 
 
 def test_compress_series_and_sparkline_edge_cases():
@@ -266,6 +471,19 @@ def test_load_wubi_code_index_preserves_candidate_order(tmp_path, monkeypatch):
     monkeypatch.setattr(tt, "_WUBI_CODE_INDEX_CACHE", None)
 
     assert tt.load_wubi_code_index() == {"fcu": ["去", "云"], "fcln": ["动"]}
+
+
+
+def test_resolve_wubi_typed_char_supports_selector_aliases(tmp_path, monkeypatch):
+    wubi_file = tmp_path / "wubi86.yaml"
+    wubi_file.write_text("去 fcu\n云 fcu\n支 fcu\n", encoding="utf-8")
+    monkeypatch.setattr(tt, "WUBI86_FILE", str(wubi_file))
+    monkeypatch.setattr(tt, "_WUBI_CODE_INDEX_CACHE", None)
+
+    assert tt.resolve_wubi_typed_char("fcu2") == "云"
+    assert tt.resolve_wubi_typed_char("fcu;") == "云"
+    assert tt.resolve_wubi_typed_char("fcu3") == "支"
+    assert tt.resolve_wubi_typed_char("fcu'") == "支"
 
 
 
@@ -427,6 +645,12 @@ def test_fit_text_and_practice_left_x_helpers():
 
 
 def test_menu_row_helpers_build_expected_structure():
+    tt.refresh_lessons(
+        {
+            tt.ERROR_CATEGORY_ENGLISH: {"a": 2},
+            tt.ERROR_CATEGORY_WUBI: {"我": 1},
+        }
+    )
     rows = tt._build_menu_rows()
 
     heading_count = sum(1 for kind, _ in rows if kind == "heading")
@@ -452,7 +676,12 @@ def test_menu_row_helpers_build_expected_structure():
     assert lesson_count == len(tt.LESSONS)
     assert blank_count == len(tt.MENU_SECTIONS)
     assert any(kind == "heading" and data == "CHINESE" for kind, data in rows)
-    chinese_lessons = [tt.LESSONS[data]["name"] for kind, data in rows if kind == "lesson" and tt.LESSONS[data].get("wubi_single_char")]
+    assert any(kind == "heading" and data == "ERROR PRACTICE" for kind, data in rows)
+    chinese_lessons = [
+        tt.LESSONS[data]["name"]
+        for kind, data in rows
+        if kind == "lesson" and tt.LESSONS[data].get("wubi_single_char") and not tt.LESSONS[data].get("error_practice")
+    ]
     assert len(chinese_lessons) == 6
     assert chinese_lessons[0] == "Chinese Wubi 1: 1-500"
     assert chinese_lessons[-1] == "Chinese Wubi 6: 2501-3000"
@@ -937,12 +1166,41 @@ def test_run_practice_wubi_requires_selector_key_to_complete(monkeypatch):
     assert result == "menu"
     assert captured["lesson_name"] == "Chinese Wubi 1: 1-500"
     assert captured["session_stats"]["chars"] == 3
+    assert captured["session_stats"]["wpm"] == pytest.approx(10.0)
     assert captured["session_stats"]["accuracy"] == pytest.approx(100.0)
 
 
 
-def test_run_practice_wubi_supports_second_candidate_selector(monkeypatch):
-    screen = FakeScreen(keys=[ord("f"), ord("c"), ord("u"), ord("2")])
+def test_run_practice_wubi_caps_session_to_five_lines(monkeypatch):
+    screen = FakeScreen(height=40, width=100)
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    captured = {}
+
+    def fake_generate_practice(_lesson, width, num_lines):
+        captured["width"] = width
+        captured["num_lines"] = num_lines
+        return [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]]
+
+    def stop_after_first_draw(*_args, **_kwargs):
+        raise RuntimeError("stop after setup")
+
+    monkeypatch.setattr(tt, "generate_practice", fake_generate_practice)
+    monkeypatch.setattr(tt, "draw_practice", stop_after_first_draw)
+
+    with pytest.raises(RuntimeError, match="stop after setup"):
+        tt.run_practice(screen, lesson)
+    assert captured["num_lines"] == 5
+
+
+@pytest.mark.parametrize("selector_key", [ord("2"), ord(";")])
+def test_run_practice_wubi_supports_second_candidate_selector(monkeypatch, selector_key):
+    screen = FakeScreen(keys=[ord("f"), ord("c"), ord("u"), selector_key])
     lesson = {
         "name": "Chinese Wubi 1: 1-500",
         "finger": "All fingers",
@@ -970,6 +1228,7 @@ def test_run_practice_wubi_supports_second_candidate_selector(monkeypatch):
 
     assert tt.run_practice(screen, lesson) == "menu"
     assert captured["session_stats"]["chars"] == 4
+    assert captured["session_stats"]["wpm"] == pytest.approx(10.0)
     assert captured["session_stats"]["accuracy"] == pytest.approx(100.0)
 
 
@@ -1130,15 +1389,15 @@ def test_run_practice_backspace_from_next_line_deletes_trailing_separator(monkey
     assert states[3][2] == ["ab ", ""]
     assert states[3][3:] == (3, 3)
     assert states[4][2] == ["ab", ""]
-    assert states[4][3:] == (2, 2)
+    assert states[4][3:] == (3, 3)
     assert states[5][2] == ["ab ", ""]
-    assert states[5][3:] == (3, 3)
-    assert recorded["stats"]["chars"] == 5
+    assert states[5][3:] == (4, 4)
+    assert recorded["stats"]["chars"] == 6
     assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
 
 
 
-def test_run_practice_backspace_reduces_totals_before_completion(monkeypatch):
+def test_run_practice_backspace_keeps_totals_before_completion(monkeypatch):
     screen = FakeScreen(keys=[ord("a"), 127, ord("a"), ord("b")])
     lesson = {"name": "Test", "finger": "All", "keys": "a b", "chars": "ab"}
     totals = []
@@ -1149,8 +1408,9 @@ def test_run_practice_backspace_reduces_totals_before_completion(monkeypatch):
                            _start_time, total_correct, total_typed):
         totals.append(([[c for c in row] for row in typed], total_correct, total_typed))
 
+    time_values = iter([100.0, 104.0])
     monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
-    monkeypatch.setattr(tt.time, "time", lambda: next(iter([100.0, 104.0])))
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
 
     recorded = {}
 
@@ -1164,8 +1424,36 @@ def test_run_practice_backspace_reduces_totals_before_completion(monkeypatch):
     result = tt.run_practice(screen, lesson)
 
     assert result == "menu"
-    assert [item[1:] for item in totals[:4]] == [(0, 0), (1, 1), (0, 0), (1, 1)]
+    assert [item[1:] for item in totals[:4]] == [(0, 0), (1, 1), (1, 1), (2, 2)]
+    assert recorded["stats"]["chars"] == 3
     assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
+
+
+
+def test_run_practice_records_error_even_after_backspace(monkeypatch):
+    screen = FakeScreen(keys=[ord("x"), 127, ord("a"), ord("b")])
+    lesson = {"name": "Test", "finger": "All", "keys": "a b", "chars": "ab"}
+    recorded = {}
+    seen_errors = []
+
+    monkeypatch.setattr(tt, "generate_practice", lambda *_args, **_kwargs: ["ab"])
+    monkeypatch.setattr(tt, "draw_practice", lambda *_args, **_kwargs: None)
+    time_values = iter([100.0, 104.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "record_error_char", lambda category, ch: seen_errors.append((category, ch)))
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    assert tt.run_practice(screen, lesson) == "menu"
+    assert seen_errors == [(tt.ERROR_CATEGORY_ENGLISH, "a")]
+    assert recorded["stats"]["chars"] == 3
+    assert recorded["stats"]["errors"] == 1
+    assert recorded["stats"]["accuracy"] == pytest.approx(66.6666666667)
 
 
 
@@ -1223,8 +1511,8 @@ def test_run_practice_wubi_backspace_deletes_committed_character(monkeypatch):
     assert states[3][2] == [["wb ", ""]]
     assert states[3][3:] == (3, 3)
     assert states[4][2] == [["", ""]]
-    assert states[4][3:] == (0, 0)
-    assert recorded["stats"]["chars"] == 6
+    assert states[4][3:] == (3, 3)
+    assert recorded["stats"]["chars"] == 9
     assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
 
 
@@ -1270,9 +1558,199 @@ def test_run_practice_wubi_backspace_within_composition_removes_one_key(monkeypa
     assert states[2][2] == [["wb"]]
     assert states[2][3:] == (2, 2)
     assert states[3][2] == [["w"]]
-    assert states[3][3:] == (1, 1)
-    assert recorded["stats"]["chars"] == 3
+    assert states[3][3:] == (2, 2)
+    assert recorded["stats"]["chars"] == 4
     assert recorded["stats"]["accuracy"] == pytest.approx(100.0)
+
+
+
+def test_run_practice_wubi_does_not_record_error_before_commit(monkeypatch):
+    screen = FakeScreen(keys=[ord("x"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    recorded = {}
+    seen_errors = []
+    seen_error_counts = []
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]],
+    )
+
+    def fake_draw_practice(_stdscr, _lesson, _lines, _typed, _cur_line, _cur_col,
+                           _start_time, _total_correct, _total_typed):
+        seen_error_counts.append(len(seen_errors))
+
+    monkeypatch.setattr(tt, "draw_practice", fake_draw_practice)
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "record_error_char", lambda category, ch: seen_errors.append((category, ch)))
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    assert tt.run_practice(screen, lesson) == "menu"
+    assert seen_error_counts == [0, 0]
+    assert seen_errors == [(tt.ERROR_CATEGORY_WUBI, "他")]
+    assert recorded["stats"]["chars"] == 2
+    assert recorded["stats"]["errors"] == 1
+    assert recorded["stats"]["accuracy"] == pytest.approx(0.0)
+
+
+
+def test_draw_practice_wubi_uses_committed_character_counts_for_stats(monkeypatch):
+    screen = FakeScreen(height=24, width=100)
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    lines = [[
+        {"char": "我", "code": "q", "rank": 1, "selectors": (" ", "1"), "target": "q ", "_attempted": True, "_had_error": True},
+        {"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb ", "_attempted": True},
+    ]]
+    typed = [["trnt ", "wb "]]
+
+    monkeypatch.setattr(tt.time, "time", lambda: 105.0)
+    monkeypatch.setattr(tt, "load_wubi_code_index", lambda: {"q": ["我"], "trnt": ["我"], "wb": ["他"]})
+
+    tt.draw_practice(
+        screen,
+        lesson,
+        lines,
+        typed,
+        cur_line=1,
+        cur_col=0,
+        start_time=100.0,
+        total_correct=0,
+        total_typed=8,
+    )
+
+    texts = addstr_texts(screen)
+    assert any("Acc: 50%  Err: 1" in text for text in texts)
+    assert any("50%  E1" in text for text in texts)
+
+
+
+def test_run_practice_wubi_backspace_clears_uncommitted_error(monkeypatch):
+    screen = FakeScreen(keys=[ord("x"), 127, ord("w"), ord("b"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    recorded = {}
+    seen_errors = []
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]],
+    )
+    monkeypatch.setattr(tt, "draw_practice", lambda *_args, **_kwargs: None)
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "record_error_char", lambda category, ch: seen_errors.append((category, ch)))
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    assert tt.run_practice(screen, lesson) == "menu"
+    assert seen_errors == []
+    assert recorded["stats"]["chars"] == 4
+    assert recorded["stats"]["errors"] == 0
+    assert recorded["stats"]["accuracy"] == pytest.approx(75.0)
+
+
+
+def test_run_practice_wubi_backspace_keeps_committed_character_error(monkeypatch):
+    screen = FakeScreen(keys=[ord("w"), ord(" "), 127, ord("w"), ord("b"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    recorded = {}
+    seen_errors = []
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[{"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "}]],
+    )
+    monkeypatch.setattr(tt, "draw_practice", lambda *_args, **_kwargs: None)
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "record_error_char", lambda category, ch: seen_errors.append((category, ch)))
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    assert tt.run_practice(screen, lesson) == "menu"
+    assert seen_errors == [(tt.ERROR_CATEGORY_WUBI, "他")]
+    assert recorded["stats"]["errors"] == 1
+
+
+
+def test_run_practice_wubi_backspace_then_wrong_after_correct_counts_error(monkeypatch):
+    screen = FakeScreen(keys=[ord("w"), ord("b"), ord(" "), 127, ord("w"), ord(" "), ord("w"), ord("b"), ord(" ")])
+    lesson = {
+        "name": "Chinese Wubi 1: 1-500",
+        "finger": "All fingers",
+        "keys": "Exact code then selector",
+        "chars": "abcdefghijklmnopqrstuvwxyz1234567890;' ",
+        "wubi_single_char": True,
+    }
+    recorded = {}
+    seen_errors = []
+
+    monkeypatch.setattr(
+        tt,
+        "generate_practice",
+        lambda *_args, **_kwargs: [[
+            {"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "},
+            {"char": "他", "code": "wb", "rank": 1, "selectors": (" ", "1"), "target": "wb "},
+        ]],
+    )
+    monkeypatch.setattr(tt, "draw_practice", lambda *_args, **_kwargs: None)
+    time_values = iter([100.0, 106.0])
+    monkeypatch.setattr(tt.time, "time", lambda: next(time_values))
+    monkeypatch.setattr(tt, "record_error_char", lambda category, ch: seen_errors.append((category, ch)))
+
+    def fake_record_lesson_session(_lesson_name, session_stats):
+        recorded["stats"] = dict(session_stats)
+        return [{"wpm": session_stats["wpm"], "accuracy": session_stats["accuracy"]}]
+
+    monkeypatch.setattr(tt, "record_lesson_session", fake_record_lesson_session)
+    monkeypatch.setattr(tt, "draw_results", lambda *_args, **_kwargs: "menu")
+
+    assert tt.run_practice(screen, lesson) == "menu"
+    assert seen_errors == [(tt.ERROR_CATEGORY_WUBI, "他")]
+    assert recorded["stats"]["errors"] == 1
 
 
 

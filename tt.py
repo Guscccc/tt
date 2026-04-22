@@ -33,6 +33,7 @@ C_TITLE = 4
 C_ACCENT = 5
 C_CURSOR = 6
 C_HEADING = 7
+C_WUBI_NONMINIMAL = 8
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # WORD POOL  (common English words for realistic practice)
@@ -139,6 +140,53 @@ WUBI_FINALIZER_KEYS = frozenset("123456789;'") | {" "}
 
 
 
+def _parse_wubi_typed_code(typed_code):
+    """Return normalized Wubi code and final selector from typed input."""
+    if not isinstance(typed_code, str):
+        return None, None
+    typed_code = typed_code.lower()
+    selector = None
+    if typed_code and typed_code[-1] in WUBI_FINALIZER_KEYS:
+        selector = typed_code[-1]
+        typed_code = typed_code[:-1]
+    if not typed_code or not typed_code.isascii() or not typed_code.isalpha():
+        return None, selector
+    return typed_code, selector
+
+
+
+def resolve_wubi_typed_char(typed_code):
+    """Return the candidate character implied by the typed Wubi code."""
+    code, selector = _parse_wubi_typed_code(typed_code)
+    if not code:
+        return None
+    candidates = load_wubi_code_index().get(code)
+    if not candidates:
+        return None
+
+    if selector is None:
+        return candidates[0]
+
+    for rank, char in enumerate(candidates, start=1):
+        if selector in wubi_selector_keys(rank):
+            return char
+    return None
+
+
+
+def wubi_entry_matches_typed(entry, typed_code):
+    """Return whether typed Wubi input exactly matches an entry."""
+    if not entry or not isinstance(typed_code, str):
+        return False
+    code, selector = _parse_wubi_typed_code(typed_code)
+    if code != entry.get("code"):
+        return False
+    if selector is None:
+        return False
+    return selector in entry.get("selectors", ())
+
+
+
 def _wubi_entry_sort_key(entry):
     """Return the sort key for choosing the minimal practice entry."""
     return (len(entry["code"]) + 1, len(entry["code"]), entry["rank"], entry["code"])
@@ -236,11 +284,16 @@ def build_chinese_wubi_lessons(start_index):
         })
     return lessons
 
+ERROR_CATEGORY_ENGLISH = "english"
+ERROR_CATEGORY_WUBI = "wubi"
+ERROR_PRACTICE_MIN_ERRORS = 1
+ERROR_PRACTICE_MAX_CHARS = 5
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # LESSON DEFINITIONS
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-LESSONS = [
+BASE_LESSONS = [
     # ── Home Row ──────────────────────────────────────────────────────────
     {
         "name": "Home Row",
@@ -412,7 +465,45 @@ LESSONS = [
     },
 ]
 
-LESSONS.extend(build_chinese_wubi_lessons(len(LESSONS)))
+def _sorted_error_chars(error_counts, allowed_chars=None, limit=ERROR_PRACTICE_MAX_CHARS):
+    """Return characters ordered by descending recorded error count."""
+    if not isinstance(error_counts, dict):
+        return ()
+
+    filtered = []
+    for ch, count in error_counts.items():
+        if not isinstance(ch, str) or len(ch) != 1:
+            continue
+        if allowed_chars is not None and ch not in allowed_chars:
+            continue
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            continue
+        if count < ERROR_PRACTICE_MIN_ERRORS:
+            continue
+        filtered.append((ch, count))
+
+    filtered.sort(key=lambda item: (-item[1], item[0]))
+    return tuple(ch for ch, _count in filtered[:max(1, int(limit))])
+
+
+ENGLISH_ERROR_ALLOWED_CHARS = frozenset(
+    ch
+    for lesson in BASE_LESSONS
+    if not lesson.get("wubi_single_char")
+    for ch in lesson.get("chars", "")
+)
+
+
+CHINESE_WUBI_LESSONS = build_chinese_wubi_lessons(len(BASE_LESSONS))
+
+
+WUBI_ERROR_ALLOWED_CHARS = frozenset(
+    ch
+    for lesson in CHINESE_WUBI_LESSONS
+    for ch in lesson.get("wubi_chars", ())
+)
 
 
 PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -441,10 +532,11 @@ def _normalize_lesson_index(selected, total=None):
     return min(max(0, selected), total - 1)
 
 
-def calculate_session_stats(total_correct, total_typed, elapsed):
+def calculate_session_stats(total_correct, total_typed, elapsed, chars_per_word=5.0):
     """Return a normalized stats dict for a completed practice session."""
     elapsed = max(float(elapsed), 0.0)
-    wpm = (total_typed / 5.0) / (elapsed / 60.0) if elapsed > 0 else 0.0
+    chars_per_word = max(float(chars_per_word), 1.0)
+    wpm = (total_typed / chars_per_word) / (elapsed / 60.0) if elapsed > 0 else 0.0
     accuracy = (total_correct / total_typed * 100.0) if total_typed > 0 else 0.0
     return {
         "wpm": wpm,
@@ -456,11 +548,133 @@ def calculate_session_stats(total_correct, total_typed, elapsed):
     }
 
 
+def _normalize_error_counts(error_counts, allowed_chars=None):
+    """Normalize stored character error counts into a clean dict."""
+    if not isinstance(error_counts, dict):
+        return {}
+
+    normalized = {}
+    for ch, count in error_counts.items():
+        if not isinstance(ch, str) or len(ch) != 1:
+            continue
+        if allowed_chars is not None and ch not in allowed_chars:
+            continue
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        normalized[ch] = count
+    return normalized
+
+
+
+def _empty_error_history():
+    """Return the empty per-category error profile structure."""
+    return {
+        ERROR_CATEGORY_ENGLISH: {},
+        ERROR_CATEGORY_WUBI: {},
+    }
+
+
+
+def build_error_practice_lessons(error_history=None):
+    """Build dynamic error-only lessons from recorded character mistakes."""
+    if not isinstance(error_history, dict):
+        error_history = {}
+
+    lessons = []
+    english_chars = _sorted_error_chars(
+        error_history.get(ERROR_CATEGORY_ENGLISH, {}),
+        allowed_chars=ENGLISH_ERROR_ALLOWED_CHARS,
+    )
+    if english_chars:
+        lessons.append({
+            "name": "English Error Practice",
+            "finger": "All fingers - most-missed English characters",
+            "keys": "Your recorded English mistakes only",
+            "chars": "".join(english_chars),
+            "error_practice": ERROR_CATEGORY_ENGLISH,
+        })
+
+    wubi_chars = _sorted_error_chars(
+        error_history.get(ERROR_CATEGORY_WUBI, {}),
+        allowed_chars=WUBI_ERROR_ALLOWED_CHARS,
+    )
+    if wubi_chars:
+        lessons.append({
+            "name": "Wubi Error Practice",
+            "finger": "All fingers - most-missed Chinese characters",
+            "keys": "Type exact Wubi code, then finish with Space/1 or candidate selector",
+            "chars": "abcdefghijklmnopqrstuvwxyz1234567890;\' ",
+            "wubi_single_char": True,
+            "wubi_chars": tuple(wubi_chars),
+            "error_practice": ERROR_CATEGORY_WUBI,
+        })
+
+    return lessons
+
+
+
+def build_all_lessons(error_history=None):
+    """Return the full lesson list including dynamic error practice."""
+    lessons = list(BASE_LESSONS)
+    lessons.extend(CHINESE_WUBI_LESSONS)
+    lessons.extend(build_error_practice_lessons(error_history))
+    return lessons
+
+
+
+def build_menu_sections(lessons):
+    """Return menu sections for the provided lesson list."""
+    chinese_start = len(BASE_LESSONS)
+    chinese_end = chinese_start + len(CHINESE_WUBI_LESSONS)
+    sections = [
+        ("HOME ROW", [0]),
+        ("LEFT HAND", [1, 2, 3, 4]),
+        ("RIGHT HAND", [5, 6, 7, 8]),
+        ("ROWS", [9, 10, 11, 12, 13]),
+        ("ROW JUMPS", [14, 15, 16, 17, 18, 19]),
+        ("PRACTICE", [20, 21]),
+        ("CHINESE", list(range(chinese_start, chinese_end))),
+    ]
+
+    error_indices = [
+        idx for idx, lesson in enumerate(lessons)
+        if lesson.get("error_practice")
+    ]
+    if error_indices:
+        sections.append(("ERROR PRACTICE", error_indices))
+    return sections
+
+
+
+def refresh_lessons(error_history=None):
+    """Refresh global lesson/menu state from current progress data."""
+    global LESSONS, MENU_SECTIONS, _MENU_ROWS
+    if error_history is None:
+        error_history = load_progress_history().get("error_chars", {})
+    LESSONS = build_all_lessons(error_history)
+    MENU_SECTIONS = build_menu_sections(LESSONS)
+    _MENU_ROWS = _build_menu_rows()
+    return LESSONS
+
+
+
 def load_progress_history():
     """Load persistent lesson performance history from disk."""
-    default_history = {"lessons": {}, "last_selected": DEFAULT_LAST_SELECTED}
+    default_history = {
+        "lessons": {},
+        "last_selected": DEFAULT_LAST_SELECTED,
+        "error_chars": _empty_error_history(),
+    }
     if not os.path.exists(PROGRESS_FILE):
-        return dict(default_history)
+        return {
+            "lessons": {},
+            "last_selected": _normalize_lesson_index(DEFAULT_LAST_SELECTED, len(LESSONS)),
+            "error_chars": _empty_error_history(),
+        }
 
     try:
         with open(PROGRESS_FILE, "r", encoding="utf-8") as fh:
@@ -480,11 +694,27 @@ def load_progress_history():
         if isinstance(lesson_name, str) and isinstance(sessions, list):
             normalized[lesson_name] = [entry for entry in sessions if isinstance(entry, dict)]
 
+    raw_error_history = data.get("error_chars", {})
+    if not isinstance(raw_error_history, dict):
+        raw_error_history = {}
+
+    error_history = {
+        ERROR_CATEGORY_ENGLISH: _normalize_error_counts(
+            raw_error_history.get(ERROR_CATEGORY_ENGLISH, {}),
+            allowed_chars=ENGLISH_ERROR_ALLOWED_CHARS,
+        ),
+        ERROR_CATEGORY_WUBI: _normalize_error_counts(
+            raw_error_history.get(ERROR_CATEGORY_WUBI, {}),
+            allowed_chars=WUBI_ERROR_ALLOWED_CHARS,
+        ),
+    }
+
     return {
         "lessons": normalized,
         "last_selected": _normalize_lesson_index(
             data.get("last_selected", DEFAULT_LAST_SELECTED)
         ),
+        "error_chars": error_history,
     }
 
 
@@ -497,11 +727,25 @@ def save_progress_history(history):
     if not isinstance(lessons, dict):
         lessons = {}
 
+    raw_error_history = history.get("error_chars", {})
+    if not isinstance(raw_error_history, dict):
+        raw_error_history = {}
+
     payload = {
         "lessons": lessons,
         "last_selected": _normalize_lesson_index(
             history.get("last_selected", DEFAULT_LAST_SELECTED)
         ),
+        "error_chars": {
+            ERROR_CATEGORY_ENGLISH: _normalize_error_counts(
+                raw_error_history.get(ERROR_CATEGORY_ENGLISH, {}),
+                allowed_chars=ENGLISH_ERROR_ALLOWED_CHARS,
+            ),
+            ERROR_CATEGORY_WUBI: _normalize_error_counts(
+                raw_error_history.get(ERROR_CATEGORY_WUBI, {}),
+                allowed_chars=WUBI_ERROR_ALLOWED_CHARS,
+            ),
+        },
     }
 
     try:
@@ -509,6 +753,22 @@ def save_progress_history(history):
             json.dump(payload, fh, indent=2)
     except OSError:
         pass
+
+
+
+def record_error_char(category, ch):
+    """Persist a single character error immediately."""
+    if category not in (ERROR_CATEGORY_ENGLISH, ERROR_CATEGORY_WUBI):
+        return
+    if not isinstance(ch, str) or len(ch) != 1:
+        return
+
+    history = load_progress_history()
+    error_history = history.setdefault("error_chars", _empty_error_history())
+    category_errors = error_history.setdefault(category, {})
+    category_errors[ch] = int(category_errors.get(ch, 0)) + 1
+    save_progress_history(history)
+    refresh_lessons(error_history)
 
 
 def load_last_selected():
@@ -998,6 +1258,7 @@ def init_colors():
     curses.init_pair(C_ACCENT, curses.COLOR_YELLOW, -1)
     curses.init_pair(C_CURSOR, curses.COLOR_BLACK, curses.COLOR_WHITE)
     curses.init_pair(C_HEADING, curses.COLOR_MAGENTA, -1)
+    curses.init_pair(C_WUBI_NONMINIMAL, curses.COLOR_WHITE, curses.COLOR_BLUE)
 
 
 def safe_addstr(win, y, x, text, attr=0):
@@ -1117,15 +1378,7 @@ def _focused_view_start(total_items, focus_idx, visible_count):
 # MENU SCREEN  (scrollable)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-MENU_SECTIONS = [
-    ("HOME ROW", [0]),
-    ("LEFT HAND", [1, 2, 3, 4]),
-    ("RIGHT HAND", [5, 6, 7, 8]),
-    ("ROWS", [9, 10, 11, 12, 13]),
-    ("ROW JUMPS", [14, 15, 16, 17, 18, 19]),
-    ("PRACTICE", [20, 21]),
-    ("CHINESE", list(range(22, len(LESSONS)))),
-]
+MENU_SECTIONS = []
 
 
 def _build_menu_rows():
@@ -1281,6 +1534,7 @@ def _find_best_match(query, total):
 
 
 def run_menu(stdscr, initial_selected=0):
+    refresh_lessons()
     total = len(LESSONS)
     selected = _normalize_lesson_index(initial_selected, total)
     input_buf = ""
@@ -1334,9 +1588,24 @@ def _wubi_progress(lines, typed):
     completed = 0
     for line_entries, line_typed in zip(lines, typed):
         for entry, typed_code in zip(line_entries, line_typed):
-            if typed_code == entry["target"]:
+            if wubi_entry_matches_typed(entry, typed_code):
                 completed += 1
     return completed, total
+
+
+
+def _wubi_committed_stats(lines):
+    """Return sticky per-character Wubi stats for committed entries."""
+    committed_typed = 0
+    committed_correct = 0
+    for line_entries in lines:
+        for entry in line_entries:
+            if not entry.get("_attempted"):
+                continue
+            committed_typed += 1
+            if not entry.get("_had_error"):
+                committed_correct += 1
+    return committed_correct, committed_typed
 
 
 
@@ -1348,17 +1617,23 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
     flags = _practice_layout_flags(h)
 
     elapsed = time.time() - start_time if start_time else 0
-    if elapsed > 0 and total_typed > 0:
-        wpm = (total_typed / 5.0) / (elapsed / 60.0)
+    display_correct = total_correct
+    display_typed = total_typed
+    chars_per_word = 5.0
+    if lesson.get("wubi_single_char"):
+        display_correct, display_typed = _wubi_committed_stats(lines)
+        chars_per_word = 1.0
+    if elapsed > 0 and display_typed > 0:
+        wpm = (display_typed / chars_per_word) / (elapsed / 60.0)
         wpm_value = f"{wpm:.0f}"
-        stats = f"WPM: {wpm:.0f}  Acc: {(total_correct / total_typed * 100):.0f}%  Err: {total_typed - total_correct}"
+        stats = f"WPM: {wpm:.0f}  Acc: {(display_correct / display_typed * 100):.0f}%  Err: {display_typed - display_correct}"
     else:
         wpm = 0.0
         wpm_value = "--"
-        stats = f"WPM: --  Acc: 100%  Err: {total_typed - total_correct}"
+        stats = f"WPM: --  Acc: 100%  Err: {display_typed - display_correct}"
 
-    acc = (total_correct / total_typed * 100) if total_typed > 0 else 100.0
-    errors = total_typed - total_correct
+    acc = (display_correct / display_typed * 100) if display_typed > 0 else 100.0
+    errors = display_typed - display_correct
     if lesson.get("wubi_single_char"):
         typed_chars, total_chars = _wubi_progress(lines, typed)
     else:
@@ -1391,8 +1666,14 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
             current_entry = lines[cur_line][cur_col]
             typed_code = typed[cur_line][cur_col]
             selector_hint = "/".join(repr(ch)[1:-1] if ch != " " else "Space" for ch in current_entry["selectors"])
+            wrong_char = None
+            if typed_code and typed_code[-1] in WUBI_FINALIZER_KEYS:
+                wrong_char = resolve_wubi_typed_char(typed_code)
+            wrong_hint = ""
+            if wrong_char and wrong_char != current_entry["char"]:
+                wrong_hint = f"  Wrong {wrong_char}"
             lesson_text = fit_text(
-                f"{lesson['name']}  Char {current_entry['char']}  Code {typed_code}_/{current_entry['code']}  Select {selector_hint}",
+                f"{lesson['name']}  Char {current_entry['char']}  Code {typed_code}_/{current_entry['code']}{wrong_hint}  Select {selector_hint}",
                 max(1, w - 4),
             )
         safe_addstr(stdscr, top_y, 2, lesson_text, curses.color_pair(C_TITLE))
@@ -1442,16 +1723,25 @@ def draw_practice(stdscr, lesson, lines, typed, cur_line, cur_col,
             x = line_x
             for ci, entry in enumerate(lines[li]):
                 ch = entry["char"]
+                display_text = ch
                 if x >= w - 1:
                     break
                 if li < cur_line or (li == cur_line and ci < cur_col):
-                    attr = curses.color_pair(C_CORRECT if typed[li][ci] == entry["target"] else C_WRONG)
+                    if wubi_entry_matches_typed(entry, typed[li][ci]):
+                        attr = curses.color_pair(C_CORRECT)
+                    else:
+                        attr = curses.color_pair(C_WRONG)
+                        wrong_char = resolve_wubi_typed_char(typed[li][ci])
+                        if wrong_char == ch:
+                            attr = curses.color_pair(C_WUBI_NONMINIMAL)
+                        elif wrong_char and wrong_char != ch:
+                            display_text = wrong_char
                 elif li == cur_line and ci == cur_col:
                     attr = curses.color_pair(C_CURSOR)
                 else:
                     attr = curses.color_pair(C_DIM)
-                safe_addstr(stdscr, y, x, ch, attr)
-                x += char_display_width(ch)
+                safe_addstr(stdscr, y, x, display_text, attr)
+                x += sum(char_display_width(part) for part in display_text)
                 if ci < len(lines[li]) - 1 and x < w - 1:
                     safe_addstr(stdscr, y, x, " ", curses.color_pair(C_DIM))
                     x += 1
@@ -1668,6 +1958,8 @@ def run_practice(stdscr, lesson):
     line_width = min(55, max(1, w - practice_left_x(w) - 1))
     visible_lines = practice_visible_lines(h)
     num_lines = visible_lines + (1 if visible_lines >= 4 else 0)
+    if lesson.get("wubi_single_char"):
+        num_lines = min(num_lines, 5)
     lines = generate_practice(lesson, width=line_width, num_lines=num_lines)
     if lesson.get("wubi_single_char"):
         typed = [["" for _ in line] for line in lines]
@@ -1681,6 +1973,7 @@ def run_practice(stdscr, lesson):
     start_time = None
     total_correct = 0
     total_typed = 0
+    session_errors = 0
 
     curses.curs_set(0)  # hide hardware cursor
 
@@ -1689,6 +1982,15 @@ def run_practice(stdscr, lesson):
         session_stats = calculate_session_stats(total_correct,
                                                 total_typed,
                                                 elapsed)
+        if lesson.get("wubi_single_char"):
+            _committed_correct, committed_typed = _wubi_committed_stats(lines)
+            session_stats["wpm"] = calculate_session_stats(0,
+                                                             committed_typed,
+                                                             elapsed,
+                                                             chars_per_word=1.0)["wpm"]
+            session_stats["errors"] = session_errors
+        else:
+            session_stats["errors"] = max(session_stats.get("errors", 0), session_errors)
         lesson_history = record_lesson_session(lesson["name"],
                                                session_stats)
         return draw_results(stdscr, lesson["name"], session_stats,
@@ -1713,13 +2015,7 @@ def run_practice(stdscr, lesson):
         if lesson.get("wubi_single_char"):
             if key in (curses.KEY_BACKSPACE, 127, 8):
                 if typed[cur_line][cur_col]:
-                    entry = lines[cur_line][cur_col]
-                    removed_idx = len(typed[cur_line][cur_col]) - 1
-                    removed = typed[cur_line][cur_col][-1]
                     typed[cur_line][cur_col] = typed[cur_line][cur_col][:-1]
-                    total_typed -= 1
-                    if removed_idx < len(entry["target"]) and removed == entry["target"][removed_idx]:
-                        total_correct -= 1
                 else:
                     prev_line = cur_line
                     prev_col = cur_col - 1
@@ -1727,17 +2023,10 @@ def run_practice(stdscr, lesson):
                         prev_line = cur_line - 1
                         prev_col = len(lines[prev_line]) - 1
                     if prev_col >= 0:
-                        prev_entry = lines[prev_line][prev_col]
                         prev_typed = typed[prev_line][prev_col]
                         committed = prev_typed and prev_typed[-1] in WUBI_FINALIZER_KEYS
                         if committed:
                             typed[prev_line][prev_col] = ""
-                            total_typed -= len(prev_typed)
-                            total_correct -= sum(
-                                1
-                                for idx, ch in enumerate(prev_typed)
-                                if idx < len(prev_entry["target"]) and ch == prev_entry["target"][idx]
-                            )
                         cur_line = prev_line
                         cur_col = prev_col
                 continue
@@ -1762,11 +2051,19 @@ def run_practice(stdscr, lesson):
 
             typed[cur_line][cur_col] = typed_code + ch
             total_typed += 1
-            if next_idx < len(entry["target"]) and ch == entry["target"][next_idx]:
+            if next_idx < len(entry["code"]) and ch == entry["code"][next_idx]:
+                total_correct += 1
+            elif next_idx == len(entry["code"]) and ch in entry["selectors"]:
                 total_correct += 1
 
-            if ch not in WUBI_FINALIZER_KEYS and typed[cur_line][cur_col] != entry["target"]:
+            if ch not in WUBI_FINALIZER_KEYS:
                 continue
+
+            entry["_attempted"] = True
+            if not wubi_entry_matches_typed(entry, typed[cur_line][cur_col]) and not entry.get("_had_error"):
+                entry["_had_error"] = True
+                session_errors += 1
+                record_error_char(ERROR_CATEGORY_WUBI, entry["char"])
 
             cur_col += 1
             if cur_col >= len(lines[cur_line]):
@@ -1779,17 +2076,11 @@ def run_practice(stdscr, lesson):
         if key in (curses.KEY_BACKSPACE, 127, 8):
             if cur_col > 0:
                 cur_col -= 1
-                removed = typed[cur_line].pop()
-                total_typed -= 1
-                if removed == lines[cur_line][cur_col]:
-                    total_correct -= 1
+                typed[cur_line].pop()
             elif cur_line > 0:
                 cur_line -= 1
                 cur_col = len(typed[cur_line]) - 1
-                removed = typed[cur_line].pop()
-                total_typed -= 1
-                if removed == lines[cur_line][cur_col]:
-                    total_correct -= 1
+                typed[cur_line].pop()
             continue
 
         if cur_col >= len(lines[cur_line]):
@@ -1813,6 +2104,9 @@ def run_practice(stdscr, lesson):
         total_typed += 1
         if ch == expected:
             total_correct += 1
+        else:
+            session_errors += 1
+            record_error_char(ERROR_CATEGORY_ENGLISH, expected)
 
         cur_col += 1
         if cur_col >= len(lines[cur_line]):
@@ -1889,6 +2183,9 @@ def run(argv=None):
 
     print("Happy typing!")
     return 0
+
+
+refresh_lessons(_empty_error_history())
 
 
 if __name__ == "__main__":
