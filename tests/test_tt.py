@@ -1061,15 +1061,22 @@ def test_draw_practice_one_line_shows_active_typing_line_only(monkeypatch):
         (3, 3),
         (4, 4),
         (5, 4),
-        (6, 4),
-        (7, 4),
-        (8, 4),
-        (9, 4),
-        (10, 5),
+        (6, 5),
+        (7, 5),
+        (8, 5),
+        (9, 5),
+        (10, 6),
     ],
 )
 def test_practice_visible_lines_prioritizes_practice_rows(height, expected_visible):
     assert tt.practice_visible_lines(height) == expected_visible
+
+
+
+def test_practice_layout_makes_help_last_extra_line():
+    assert tt._practice_layout_flags(14)["show_help"] is False
+    assert tt._practice_layout_flags(14)["show_progress"] is True
+    assert tt._practice_layout_flags(15)["show_help"] is True
 
 
 def test_draw_practice_two_line_height_uses_both_lines_for_practice(monkeypatch):

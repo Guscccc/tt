@@ -1321,7 +1321,7 @@ def _practice_layout(height):
         "show_status_top": height >= 7,
         "show_status_bottom": False,
         "show_progress": height >= 8,
-        "show_help": height >= 6,
+        "show_help": height >= 15,
         "practice_rows": 1,
     }
 
